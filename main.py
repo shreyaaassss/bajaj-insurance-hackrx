@@ -134,7 +134,7 @@ async def lifespan(app: FastAPI):
         logger.info("✅ Embedding model loaded with optimized settings")
 
         # PERFORMANCE OPTIMIZATION: Initialize lighter reranker model
-        reranker = CrossEncoder('cross-encoder/ms-marco-TinyBERT-L-2-v2')  # Smaller, faster model
+        reranker = CrossEncoder('cross-encoder/ms-marco-TinyBERT-L2-v2')  # Smaller, faster model
         logger.info("✅ Lightweight reranker model loaded")
 
         # Initialize OpenAI client
