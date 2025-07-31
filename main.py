@@ -65,6 +65,18 @@ DOCUMENT_CACHE = {}
 # PERFORMANCE OPTIMIZATION: Persistent directory for vector store
 PERSISTENT_CHROMA_DIR = "/tmp/persistent_chroma"
 
+# ADDED: Memory Management for Cache
+MAX_CACHE_SIZE = 10  # Maximum number of documents to cache
+
+def manage_cache():
+    """Remove oldest entries if cache exceeds limit."""
+    global DOCUMENT_CACHE
+    if len(DOCUMENT_CACHE) > MAX_CACHE_SIZE:
+        # Remove oldest entry (simple FIFO)
+        oldest_key = next(iter(DOCUMENT_CACHE))
+        del DOCUMENT_CACHE[oldest_key]
+        logger.info(f"🗑️ Removed oldest cache entry: {oldest_key[:8]}")
+
 # ADDED: Bearer Token Authentication
 security = HTTPBearer()
 
@@ -82,20 +94,23 @@ def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(secu
         )
     return credentials.credentials
 
-# PERFORMANCE OPTIMIZATION: Embedding cache function
-async def get_or_create_embeddings(file_url: str, file_content: bytes):
-    """Cache embeddings based on file hash to avoid recomputation."""
-    
+# PERFORMANCE OPTIMIZATION: Embedding cache function (FIXED)
+async def get_or_create_embeddings(file_content: bytes) -> Tuple[str, bool]:
+    """
+    Cache embeddings based on file hash to avoid recomputation.
+    Returns the file hash and a boolean indicating if it was cached.
+    """
     # Create hash of file content
     file_hash = hashlib.md5(file_content).hexdigest()
-    
-    if file_hash in DOCUMENT_CACHE:
+    is_cached = file_hash in DOCUMENT_CACHE
+
+    if is_cached:
         logger.info(f"✅ Using cached embeddings for document {file_hash[:8]}")
-        return DOCUMENT_CACHE[file_hash]
-    
-    # Process only if not cached
-    logger.info(f"🔄 Processing new document {file_hash[:8]}")
-    return file_hash
+    else:
+        # Process only if not cached
+        logger.info(f"🔄 Processing new document {file_hash[:8]}")
+
+    return file_hash, is_cached
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -109,11 +124,13 @@ async def lifespan(app: FastAPI):
         embedding_model = HuggingFaceEmbeddings(
             model_name="sentence-transformers/all-MiniLM-L6-v2",
             model_kwargs={
-                'device': 'cpu',
-                'batch_size': 32,  # Increased batch size for better performance
-                'show_progress_bar': False  # Reduced logging overhead
-            }
-        )
+                'device': 'cpu'
+    },
+            encode_kwargs={
+                'batch_size': 32,  # Move batch_size here
+                'show_progress_bar': False
+    }
+)
         logger.info("✅ Embedding model loaded with optimized settings")
 
         # PERFORMANCE OPTIMIZATION: Initialize lighter reranker model
@@ -675,8 +692,8 @@ async def hackrx_run(
             
             file_content = response.content
             
-            # PERFORMANCE OPTIMIZATION: Check if embeddings exist in cache
-            file_hash = await get_or_create_embeddings(file_url, file_content)
+            # PERFORMANCE OPTIMIZATION: Check if embeddings exist in cache (FIXED CALL)
+            file_hash, is_cached = await get_or_create_embeddings(file_content)
             
             temp_pdf_path = os.path.join(temp_dir, "bajaj_policy.pdf")
             with open(temp_pdf_path, "wb") as f:
@@ -706,12 +723,15 @@ async def hackrx_run(
 
         logger.info(f"[{session_id}] BAJAJ Insurance: Successfully processed all {len(request.questions)} questions.")
         
-        # Store in cache for future requests
-        DOCUMENT_CACHE[file_hash] = {
-            'processed_files': processing_result['processed_files'],
-            'total_chunks': processing_result['total_chunks'],
-            'timestamp': datetime.now().isoformat()
-        }
+        # Store in cache only if it's a new document (FIXED CACHING LOGIC)
+        if not is_cached:
+            DOCUMENT_CACHE[file_hash] = {
+                'processed_files': processing_result['processed_files'],
+                'total_chunks': processing_result['total_chunks'],
+                'timestamp': datetime.now().isoformat()
+            }
+            # ADDED: Memory Management
+            manage_cache()
         
         return HackRxResponse(answers=answers)
 
