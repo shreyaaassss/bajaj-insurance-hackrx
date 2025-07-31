@@ -15,8 +15,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 
-# FastAPI and web
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, status, APIRouter
+# FastAPI and web - ADDED SECURITY IMPORTS
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Request, status, APIRouter, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, HttpUrl
@@ -36,12 +37,12 @@ from sentence_transformers import CrossEncoder
 import openai
 from openai import AsyncOpenAI
 
-# Configure logging for GCP Cloud Run - Fixed closing bracket
+# Configure logging for GCP Cloud Run
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)  # Only stdout for Cloud Run
+        logging.StreamHandler(sys.stdout)
     ]
 )
 
@@ -51,6 +52,23 @@ logger = logging.getLogger(__name__)
 embedding_model = None
 reranker = None
 openai_client = None
+
+# ADDED: Bearer Token Authentication
+security = HTTPBearer()
+
+# ADDED: Expected Bearer Token (you'll set this as environment variable)
+EXPECTED_BEARER_TOKEN = os.getenv("BEARER_TOKEN", "your-default-token-here")
+
+def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """Verify the bearer token provided in the Authorization header."""
+    if credentials.credentials != EXPECTED_BEARER_TOKEN:
+        logger.warning(f"❌ Invalid bearer token attempted: {credentials.credentials[:10]}...")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication credentials",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -79,6 +97,12 @@ async def lifespan(app: FastAPI):
         
         openai_client = AsyncOpenAI(api_key=api_key)
         logger.info("✅ OpenAI client initialized")
+        
+        # Log bearer token status
+        if EXPECTED_BEARER_TOKEN and EXPECTED_BEARER_TOKEN != "your-default-token-here":
+            logger.info("✅ Bearer token authentication configured")
+        else:
+            logger.warning("⚠️ Bearer token not properly configured")
         
         logger.info("🎉 BAJAJ Insurance System initialization complete!")
         
@@ -135,12 +159,9 @@ async def log_requests(request: Request, call_next):
     start_time = time.time()
     request_id = str(uuid.uuid4())[:8]
     logger.info(f"[{request_id}] Request: {request.method} {request.url.path}")
-    
     response = await call_next(request)
-    
     process_time = time.time() - start_time
     logger.info(f"[{request_id}] Response: {response.status_code} - Time: {process_time:.2f}s")
-    
     return response
 
 # --- File and System Utilities ---
@@ -168,7 +189,6 @@ def validate_uploaded_file(file: UploadFile) -> Tuple[bool, str]:
 async def save_uploaded_file(file: UploadFile, upload_dir: str = "uploads") -> str:
     """Save uploaded file to disk with proper naming."""
     os.makedirs(upload_dir, exist_ok=True)
-    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_extension = os.path.splitext(file.filename)[1]
     safe_filename = f"{timestamp}_{uuid.uuid4().hex[:8]}{file_extension}"
@@ -193,7 +213,7 @@ class RAGSystem:
         self.bm25_retriever = None
         self.documents = []
         self.processed_files = []
-
+    
     async def _process_single_file(self, file_path: str) -> List[Document]:
         """Process a single file and return documents."""
         try:
@@ -224,7 +244,7 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"❌ Error processing {file_path}: {str(e)}")
             return []
-
+    
     async def load_and_process_documents(self, file_paths: List[str]) -> Dict[str, Any]:
         """Process multiple files concurrently."""
         all_docs = []
@@ -247,15 +267,15 @@ class RAGSystem:
         if not all_docs:
             logger.warning("⚠️ No documents were successfully processed")
             return {
-                'documents': [], 
-                'processed_files': [], 
-                'skipped_files': skipped_files, 
+                'documents': [],
+                'processed_files': [],
+                'skipped_files': skipped_files,
                 'total_chunks': 0
             }
         
         text_splitter = RecursiveCharacterTextSplitter(
-            chunk_size=1000, 
-            chunk_overlap=200, 
+            chunk_size=1000,
+            chunk_overlap=200,
             length_function=len,
             separators=["\n\n", "\n", ". ", " ", ""]
         )
@@ -268,12 +288,12 @@ class RAGSystem:
         logger.info(f"📄 Created {len(chunked_docs)} chunks from {len(self.processed_files)} files")
         
         return {
-            'documents': chunked_docs, 
-            'processed_files': self.processed_files, 
-            'skipped_files': skipped_files, 
+            'documents': chunked_docs,
+            'processed_files': self.processed_files,
+            'skipped_files': skipped_files,
             'total_chunks': len(chunked_docs)
         }
-
+    
     async def setup_retrievers(self, persist_directory: str = "./chroma_db"):
         """Initialize vector store and BM25 retriever."""
         global embedding_model
@@ -301,7 +321,7 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"❌ Failed to setup retrievers: {str(e)}")
             return False
-
+    
     def retrieve_and_rerank(self, query: str, top_k: int = 5) -> Tuple[List[Document], List[float]]:
         """Retrieve and rerank documents based on query."""
         global reranker
@@ -329,8 +349,8 @@ class RAGSystem:
             similarity_scores = reranker.predict(query_doc_pairs)
             
             doc_score_pairs = sorted(
-                list(zip(retrieved_docs, similarity_scores)), 
-                key=lambda x: x[1], 
+                list(zip(retrieved_docs, similarity_scores)),
+                key=lambda x: x[1],
                 reverse=True
             )
             
@@ -346,7 +366,7 @@ class RAGSystem:
 
 class DecisionEngine:
     """Decision engine using the integrated BAJAJ INSURANCE analysis prompt."""
-
+    
     def _get_enhanced_prompt_template(self) -> str:
         """Returns the comprehensive, multi-domain BAJAJ INSURANCE analysis prompt."""
         return """
@@ -410,22 +430,22 @@ You are an expert insurance claim analyst specializing in Bajaj Insurance produc
 Provide your analysis *only* in the following JSON format. Do not add any text outside of this JSON structure.
 
 {{
-  "decision": "[One of: Approved, Rejected, Needs Manual Review, Insufficient Information, Partial Payment]",
-  "confidence_score": [Float between 0.0 and 1.0, reflecting clarity of the policy language and decision certainty],
-  "reasoning_chain": [
-    "Query Decomposition: [Summary of extracted details including age, gender, location, claim amount, policy type, etc.]",
-    "Coverage Verification: [Analysis of whether the claim is covered, applicable limits, waiting periods, exclusions]",
-    "Eligibility Calculation: [Detailed calculation showing claimed amount, deductions, co-payments, final eligible amount]",
-    "Risk Assessment: [Brief risk assessment with consistency check, fraud indicators, risk level classification]",
-    "Decision Synthesis: [Final decision with justification, settlement amount, regulatory compliance notes]"
-  ],
-  "evidence_sources": [
-    "Direct quote from policy document supporting coverage decision",
-    "Reference to specific clause numbers or sections",
-    "Relevant exclusion or limitation clauses",
-    "Premium calculation or benefit structure details"
-  ],
-  "final_answer": "[A comprehensive answer addressing the user's query with specific amounts, percentages, and clear decision rationale]"
+"decision": "[One of: Approved, Rejected, Needs Manual Review, Insufficient Information, Partial Payment]",
+"confidence_score": [Float between 0.0 and 1.0, reflecting clarity of the policy language and decision certainty],
+"reasoning_chain": [
+"Query Decomposition: [Summary of extracted details including age, gender, location, claim amount, policy type, etc.]",
+"Coverage Verification: [Analysis of whether the claim is covered, applicable limits, waiting periods, exclusions]",
+"Eligibility Calculation: [Detailed calculation showing claimed amount, deductions, co-payments, final eligible amount]",
+"Risk Assessment: [Brief risk assessment with consistency check, fraud indicators, risk level classification]",
+"Decision Synthesis: [Final decision with justification, settlement amount, regulatory compliance notes]"
+],
+"evidence_sources": [
+"Direct quote from policy document supporting coverage decision",
+"Reference to specific clause numbers or sections",
+"Relevant exclusion or limitation clauses",
+"Premium calculation or benefit structure details"
+],
+"final_answer": "[A comprehensive answer addressing the user's query with specific amounts, percentages, and clear decision rationale]"
 }}
 
 **CRITICAL INSTRUCTIONS:**
@@ -437,8 +457,8 @@ Provide your analysis *only* in the following JSON format. Do not add any text o
 - Consider both coverage and exclusions in equal detail
 - Provide clear, actionable decisions that can be implemented immediately
 """
-
-    async def get_decision(self, query: str, context_docs: List[Document], 
+    
+    async def get_decision(self, query: str, context_docs: List[Document],
                           similarity_scores: List[float] = None) -> Dict[str, Any]:
         """Generate decision based on query and retrieved documents."""
         global openai_client
@@ -461,7 +481,7 @@ Provide your analysis *only* in the following JSON format. Do not add any text o
                 context_text += doc.page_content + "\n"
             
             prompt = self._get_enhanced_prompt_template().format(
-                query=query, 
+                query=query,
                 context=context_text
             )
             
@@ -471,11 +491,11 @@ Provide your analysis *only* in the following JSON format. Do not add any text o
                 model="gpt-4o",
                 messages=[
                     {
-                        "role": "system", 
+                        "role": "system",
                         "content": "You are a BAJAJ Insurance expert claim analyst. Always respond with valid JSON as specified in the prompt. Apply comprehensive multi-domain insurance analysis."
                     },
                     {
-                        "role": "user", 
+                        "role": "user",
                         "content": prompt
                     }
                 ],
@@ -511,7 +531,7 @@ Provide your analysis *only* in the following JSON format. Do not add any text o
                     "timestamp": datetime.now().isoformat(),
                     "final_answer": "A system error occurred during BAJAJ Insurance analysis. Please try again or review manually."
                 }
-            
+                
         except Exception as e:
             logger.error(f"❌ Error in BAJAJ Insurance decision generation: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error during BAJAJ Insurance decision generation: {str(e)}")
@@ -520,9 +540,10 @@ Provide your analysis *only* in the following JSON format. Do not add any text o
 decision_engine = DecisionEngine()
 
 # --- API Endpoints ---
+
 @app.get("/", tags=["General"])
 async def root():
-    """Health check endpoint."""
+    """Health check endpoint - No authentication required."""
     return {
         "message": "BAJAJ Insurance Claim Analysis API is operational",
         "version": "3.0.0",
@@ -530,19 +551,25 @@ async def root():
         "supported_domains": [
             "Health/Medical", "Motor (Car/Bike)", "Travel", "Home",
             "Personal Accident", "Gold", "Cyber", "Commercial"
-        ]
+        ],
+        "authentication": "Bearer token required for /api/v1 endpoints"
     }
 
+# UPDATED: Main HackRx endpoint with Bearer Token Authentication
 @api_v1_router.post("/hackrx/run", response_model=HackRxResponse, tags=["HackRx"])
-async def hackrx_run(request: HackRxRequest):
+async def hackrx_run(
+    request: HackRxRequest, 
+    token: str = Depends(verify_bearer_token)  # ADDED: Bearer token dependency
+):
     """
     Main endpoint for HackRx competition - BAJAJ Insurance Analysis.
-    Downloads a document, processes it, and answers multiple questions using
-    comprehensive multi-domain insurance analysis.
+    Requires Bearer Token Authentication.
     """
     session_id = uuid.uuid4().hex
     temp_dir = tempfile.mkdtemp(prefix=f"bajaj_hackrx_{session_id}_")
     answers = []
+    
+    logger.info(f"[{session_id}] BAJAJ Insurance: Authenticated request received")
     
     try:
         # 1. Download the document
@@ -604,15 +631,17 @@ async def hackrx_run(request: HackRxRequest):
             shutil.rmtree(temp_dir)
             logger.info(f"[{session_id}] BAJAJ Insurance: Cleaned up temporary directory: {temp_dir}")
 
+# UPDATED: Query endpoint with Bearer Token Authentication
 @api_v1_router.post("/query", response_model=QueryResponse, tags=["Query Analysis"])
-async def process_query(request: QueryRequest):
+async def process_query(
+    request: QueryRequest, 
+    token: str = Depends(verify_bearer_token)  # ADDED: Bearer token dependency
+):
     """
     Process a single query against pre-loaded documents using BAJAJ Insurance analysis.
-    Note: This endpoint requires documents to be uploaded first via file upload endpoints.
+    Requires Bearer Token Authentication.
     """
     try:
-        # This endpoint would work with pre-loaded documents
-        # For now, return a message indicating document upload is required
         return QueryResponse(
             decision="Insufficient Information",
             confidence_score=0.0,
@@ -624,11 +653,11 @@ async def process_query(request: QueryRequest):
         logger.error(f"❌ Error in query processing: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
+# Public endpoints (no authentication required)
 @app.post("/reset", tags=["General"])
 async def reset_system():
     """Reset the BAJAJ Insurance analysis system by clearing all persistent data."""
     try:
-        # This implementation is session-based, but a manual reset can clear artifacts.
         if os.path.exists("./chroma_db"):
             shutil.rmtree("./chroma_db")
         if os.path.exists("uploads"):
@@ -657,7 +686,8 @@ async def health_check():
             "components": {
                 "embedding_model": embedding_model is not None,
                 "reranker": reranker is not None,
-                "openai_client": openai_client is not None
+                "openai_client": openai_client is not None,
+                "bearer_auth": EXPECTED_BEARER_TOKEN != "your-default-token-here"
             },
             "supported_domains": [
                 "Health/Medical", "Motor (Car/Bike)", "Travel", "Home",
@@ -685,8 +715,10 @@ app.include_router(api_v1_router)
 # GCP Cloud Run compatible entry point
 if __name__ == "__main__":
     import uvicorn
+    
     # Get port from environment variable for Cloud Run compatibility
     port = int(os.environ.get("PORT", 8000))
+    
     uvicorn.run(
         "main:app",  # Fixed module reference
         host="0.0.0.0",
