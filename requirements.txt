@@ -1,0 +1,36 @@
+# FastAPI and web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+httpx==0.25.2
+
+# Document processing (updated for compatibility)
+langchain==0.1.0
+langchain-community==0.0.10
+PyMuPDF==1.23.8
+python-docx==1.1.0
+docx2txt==0.8
+
+# Text processing and embeddings
+sentence-transformers==2.2.2
+transformers==4.36.2
+torch==2.1.2
+numpy==1.24.4
+pandas==2.1.4
+
+# Vector database and search
+chromadb==0.4.18
+
+# AI and ML
+openai==1.3.7
+huggingface-hub==0.19.4
+
+# Utilities
+python-dotenv==1.0.0
+pydantic==2.5.2
+requests==2.31.0
+psutil==5.9.6
+rank-bm25==0.2.2
+
+# Additional dependencies for langchain compatibility
+tiktoken==0.5.2
