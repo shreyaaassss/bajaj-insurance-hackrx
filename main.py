@@ -57,7 +57,8 @@ openai_client = None
 security = HTTPBearer()
 
 # ADDED: Expected Bearer Token (you'll set this as environment variable)
-EXPECTED_BEARER_TOKEN = os.getenv("BEARER_TOKEN", "your-default-token-here")
+EXPECTED_BEARER_TOKEN = os.getenv("BEARER_TOKEN", "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905")
+
 
 def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """Verify the bearer token provided in the Authorization header."""
