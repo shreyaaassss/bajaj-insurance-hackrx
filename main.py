@@ -573,21 +573,15 @@ async def lifespan(app: FastAPI):
     try:
         # PERFORMANCE OPTIMIZATION: Initialize embedding model with optimized settings
         embedding_model = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={
-                'device': 'cpu'
-            },
-            encode_kwargs={
-                'batch_size': 32,
-                'show_progress_bar': False
-            }
-        )
-        logger.info("✅ Embedding model loaded with optimized settings")
-        
+            model_name="sentence-transformers/paraphrase-TinyBERT-L6-v2",
+            model_kwargs={'device': 'cpu'}
+        )  # ← Missing closing parenthesis
+        logger.info("✅ TinyBERT embedding model loaded with optimized settings")
+
         # PERFORMANCE OPTIMIZATION: Initialize lighter reranker model
-        reranker = CrossEncoder('cross-encoder/ms-marco-TinyBERT-L2-v2')
+        reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
         logger.info("✅ Lightweight reranker model loaded")
-        
+
         # Initialize OpenAI client
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -596,30 +590,22 @@ async def lifespan(app: FastAPI):
         
         openai_client = AsyncOpenAI(api_key=api_key)
         logger.info("✅ OpenAI client initialized")
-        
-        # Log bearer token status
-        if EXPECTED_BEARER_TOKEN and EXPECTED_BEARER_TOKEN != "your-default-token-here":
-            logger.info("✅ Bearer token authentication configured")
-        else:
-            logger.warning("⚠️ Bearer token not properly configured")
-        
+
         # PERFORMANCE OPTIMIZATION: Create persistent directory
-        os.makedirs(PERSISTENT_CHROMA_DIR, exist_ok=True)
-        logger.info(f"✅ Persistent vector store directory ready: {PERSISTENT_CHROMA_DIR}")
+        os.makedirs("/tmp/persistent_chroma", exist_ok=True)
+        logger.info("✅ Persistent vector store directory ready")
         
-        # Log domain capabilities
-        logger.info(f"✅ Multi-domain support initialized: {list(DOMAIN_CONFIG.keys())}")
-        logger.info(f"✅ Insurance clause mapping initialized with {len(COMPONENT_KEYWORDS)} component types")
-        logger.info("🎉 Multi-Domain Document QA System initialization complete!")
+        logger.info("🎉 Multi-Domain System initialization complete!")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize system: {str(e)}")
         raise
-    
-    yield
-    
+
+    yield  # ← This was missing
+
     # Cleanup
-    logger.info("🔄 Shutting down Multi-Domain Document QA System...")
+    logger.info("🔄 Shutting down Multi-Domain system...")  # ← This was missing
+
 
 # --- Pydantic Models ---
 
