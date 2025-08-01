@@ -4,18 +4,18 @@ uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 httpx==0.25.2
 
-# Document processing (updated for new architecture)
-langchain==0.1.0
-langchain-community==0.0.10
-langchain-text-splitters==0.0.1
+# Document processing (minimal, stable versions)
+langchain-community==0.2.16
+langchain-core==0.2.38
+langchain-text-splitters==0.2.4
 PyMuPDF==1.23.8
 python-docx==1.1.0
 docx2txt==0.8
 
-# AI and ML (OpenAI-focused architecture)
+# AI and ML
 openai==1.3.7
 
-# Vector database (switched to FAISS)
+# Vector database
 faiss-cpu==1.7.4
 
 # Core libraries
