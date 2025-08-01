@@ -60,14 +60,12 @@ embedding_model = None
 reranker = None
 openai_client = None
 
-# PERFORMANCE OPTIMIZATION: Document cache for embeddings
+# ENHANCED: Document-specific cache with proper isolation
 DOCUMENT_CACHE = {}
-
-# PERFORMANCE OPTIMIZATION: Persistent directory for vector store
-PERSISTENT_CHROMA_DIR = "/tmp/persistent_chroma"
-
-# ADDED: Memory Management for Cache
-MAX_CACHE_SIZE = 10  # Maximum number of documents to cache
+# ENHANCED: Base directory for all vector stores
+VECTORSTORE_BASE_DIR = "/tmp/vectorstores"
+# ENHANCED: Memory Management for Cache
+MAX_CACHE_SIZE = 5  # Reduced to prevent memory issues
 
 # ENHANCED: Domain-adaptive document processing settings
 DOMAIN_CONFIG = {
@@ -199,6 +197,37 @@ def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(secu
         )
     return credentials.credentials
 
+# 🔧 FIXED: Document ID generation function
+def generate_document_id(content: bytes, filename: str = None) -> str:
+    """Generate a unique document ID based on content and filename."""
+    content_hash = hashlib.md5(content).hexdigest()[:8]
+    if filename:
+        filename_hash = hashlib.md5(filename.encode()).hexdigest()[:4]
+        return f"{content_hash}_{filename_hash}"
+    return content_hash
+
+# 🔧 FIXED: Vector store path generation
+def get_vectorstore_path(document_id: str, domain: str) -> str:
+    """Generate isolated vector store path for document."""
+    return os.path.join(VECTORSTORE_BASE_DIR, f"{domain}_{document_id}")
+
+# 🔧 NEW: Clear stale vector stores
+def clear_stale_vectorstores():
+    """Clear old vector stores to prevent memory issues."""
+    try:
+        if os.path.exists(VECTORSTORE_BASE_DIR):
+            # Remove directories older than 1 hour
+            current_time = time.time()
+            for item in os.listdir(VECTORSTORE_BASE_DIR):
+                item_path = os.path.join(VECTORSTORE_BASE_DIR, item)
+                if os.path.isdir(item_path):
+                    item_age = current_time - os.path.getctime(item_path)
+                    if item_age > 3600:  # 1 hour
+                        shutil.rmtree(item_path)
+                        logger.info(f"🗑️ Removed stale vector store: {item}")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to clear stale vector stores: {e}")
+
 # NEW: Enhanced domain detection
 def detect_document_domain(content: str) -> str:
     """Detect the domain of the document based on content analysis."""
@@ -303,7 +332,6 @@ def parse_amount(value) -> float:
         cleaned_value = value.replace("₹", "").replace("Rs.", "").replace("Rs", "").replace(",", "").strip()
         if not cleaned_value or cleaned_value == "":
             return 0.0
-        
         try:
             return float(cleaned_value)
         except ValueError as e:
@@ -340,7 +368,7 @@ def validate_amounts(breakdown: Dict, total_claim_amount: float = None) -> Tuple
                 return False, f"Breakdown total ({calculated_total}) doesn't match claim amount ({total_claim_amount})"
         
         return True, "Valid amounts"
-        
+    
     except Exception as e:
         return False, f"Amount validation error: {str(e)}"
 
@@ -545,24 +573,6 @@ def map_clauses_to_components(components: List[Dict], context_text: str) -> List
     logger.info(f"✅ Successfully mapped {len(unique_clauses)} unique policy clauses")
     return unique_clauses
 
-# PERFORMANCE OPTIMIZATION: Embedding cache function
-async def get_or_create_embeddings(file_content: bytes) -> Tuple[str, bool]:
-    """
-    Cache embeddings based on file hash to avoid recomputation.
-    Returns the file hash and a boolean indicating if it was cached.
-    """
-    # Create hash of file content
-    file_hash = hashlib.md5(file_content).hexdigest()
-    is_cached = file_hash in DOCUMENT_CACHE
-    
-    if is_cached:
-        logger.info(f"✅ Using cached embeddings for document {file_hash[:8]}")
-    else:
-        # Process only if not cached
-        logger.info(f"🔄 Processing new document {file_hash[:8]}")
-    
-    return file_hash, is_cached
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialize shared resources at startup."""
@@ -575,13 +585,13 @@ async def lifespan(app: FastAPI):
         embedding_model = HuggingFaceEmbeddings(
             model_name="sentence-transformers/paraphrase-TinyBERT-L6-v2",
             model_kwargs={'device': 'cpu'}
-        )  # ← Missing closing parenthesis
+        )
         logger.info("✅ TinyBERT embedding model loaded with optimized settings")
-
+        
         # PERFORMANCE OPTIMIZATION: Initialize lighter reranker model
         reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L6-v2')
         logger.info("✅ Lightweight reranker model loaded")
-
+        
         # Initialize OpenAI client
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
@@ -590,22 +600,25 @@ async def lifespan(app: FastAPI):
         
         openai_client = AsyncOpenAI(api_key=api_key)
         logger.info("✅ OpenAI client initialized")
-
-        # PERFORMANCE OPTIMIZATION: Create persistent directory
-        os.makedirs("/tmp/persistent_chroma", exist_ok=True)
-        logger.info("✅ Persistent vector store directory ready")
+        
+        # 🔧 FIXED: Create base vectorstore directory
+        os.makedirs(VECTORSTORE_BASE_DIR, exist_ok=True)
+        logger.info(f"✅ Base vector store directory ready: {VECTORSTORE_BASE_DIR}")
+        
+        # Clear stale vector stores on startup
+        clear_stale_vectorstores()
+        logger.info("✅ Stale vector stores cleared")
         
         logger.info("🎉 Multi-Domain System initialization complete!")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize system: {str(e)}")
         raise
-
-    yield  # ← This was missing
-
+    
+    yield
+    
     # Cleanup
-    logger.info("🔄 Shutting down Multi-Domain system...")  # ← This was missing
-
+    logger.info("🔄 Shutting down Multi-Domain system...")
 
 # --- Pydantic Models ---
 
@@ -696,6 +709,7 @@ app = FastAPI(
 api_v1_router = APIRouter(prefix="/api/v1")
 
 # --- Middleware ---
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -710,12 +724,9 @@ async def log_requests(request: Request, call_next):
     start_time = time.time()
     request_id = str(uuid.uuid4())[:8]
     logger.info(f"[{request_id}] Request: {request.method} {request.url.path}")
-    
     response = await call_next(request)
-    
     process_time = time.time() - start_time
     logger.info(f"[{request_id}] Response: {response.status_code} - Time: {process_time:.2f}s")
-    
     return response
 
 # --- File and System Utilities ---
@@ -744,7 +755,6 @@ def validate_uploaded_file(file: UploadFile) -> Tuple[bool, str]:
 async def save_uploaded_file(file: UploadFile, upload_dir: str = "uploads") -> str:
     """Save uploaded file to disk with proper naming."""
     os.makedirs(upload_dir, exist_ok=True)
-    
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     file_extension = os.path.splitext(file.filename)[1]
     safe_filename = f"{timestamp}_{uuid.uuid4().hex[:8]}{file_extension}"
@@ -754,10 +764,8 @@ async def save_uploaded_file(file: UploadFile, upload_dir: str = "uploads") -> s
         with open(file_path, "wb") as buffer:
             content = await file.read()
             buffer.write(content)
-        
         logger.info(f"📁 File saved: {file_path}")
         return file_path
-        
     except Exception as e:
         logger.error(f"❌ Failed to save file {file.filename}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to save file: {str(e)}")
@@ -765,8 +773,8 @@ async def save_uploaded_file(file: UploadFile, upload_dir: str = "uploads") -> s
 # --- Core RAG and Decision Logic ---
 
 class RAGSystem:
-    """Enhanced Retrieval-Augmented Generation system for multi-domain documents."""
-    
+    """🔧 FIXED: Enhanced Retrieval-Augmented Generation system with proper document isolation."""
+
     def __init__(self):
         self.vector_store = None
         self.bm25_retriever = None
@@ -775,10 +783,25 @@ class RAGSystem:
         self.structured_info_cache = {}
         self.document_domain = "general"
         self.domain_config = DOMAIN_CONFIG["general"]
-    
-    async def _process_single_file(self, file_path: str) -> List[Document]:
-        """Process a single file and return documents with structured information extraction."""
+        # 🔧 NEW: Document isolation fields
+        self.document_id = None
+        self.vectorstore_path = None
+        self.document_content_hash = None
+
+    async def _process_single_file(self, file_path: str, document_content: bytes = None) -> List[Document]:
+        """🔧 FIXED: Process a single file with document ID tracking."""
         try:
+            # 🔧 NEW: Generate document ID for proper isolation
+            if document_content is None:
+                with open(file_path, 'rb') as f:
+                    document_content = f.read()
+            
+            filename = os.path.basename(file_path)
+            self.document_id = generate_document_id(document_content, filename)
+            self.document_content_hash = hashlib.md5(document_content).hexdigest()
+            
+            logger.info(f"🔧 Generated document ID: {self.document_id} for file: {filename}")
+            
             file_extension = os.path.splitext(file_path)[1].lower()
             
             if file_extension == '.pdf':
@@ -790,69 +813,76 @@ class RAGSystem:
             else:
                 logger.warning(f"⚠️ Unsupported file type: {file_extension}")
                 return []
-            
+
             documents = await asyncio.to_thread(loader.load)
-            
+
             # Detect document domain from content
             if documents:
                 sample_content = ' '.join([doc.page_content for doc in documents[:3]])  # First 3 docs
                 self.document_domain = detect_document_domain(sample_content)
                 self.domain_config = DOMAIN_CONFIG.get(self.document_domain, DOMAIN_CONFIG["general"])
-                logger.info(f"📄 Document domain: {self.document_domain}")
-            
+                
+                # 🔧 NEW: Set vectorstore path with document isolation
+                self.vectorstore_path = get_vectorstore_path(self.document_id, self.document_domain)
+                
+                logger.info(f"📄 Document domain: {self.document_domain}, Vector store: {self.vectorstore_path}")
+
             # Extract structured information during processing
             for doc in documents:
                 structured_info = extract_structured_info(doc.page_content)
                 doc.metadata.update({
-                    'source_file': os.path.basename(file_path),
+                    'source_file': filename,
                     'file_type': file_extension,
                     'processed_at': datetime.now().isoformat(),
                     'domain': self.document_domain,
+                    'document_id': self.document_id,  # 🔧 NEW: Add document ID to metadata
+                    'content_hash': self.document_content_hash,  # 🔧 NEW: Add content hash
                     **structured_info  # Add extracted structured info
                 })
-            
-            logger.info(f"✅ Processed {len(documents)} documents from {os.path.basename(file_path)} (domain: {self.document_domain})")
+
+            logger.info(f"✅ Processed {len(documents)} documents from {filename} (domain: {self.document_domain}, ID: {self.document_id})")
             return documents
-            
+
         except Exception as e:
             logger.error(f"❌ Error processing {file_path}: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Failed to process document {os.path.basename(file_path)}: {str(e)}")
-    
-    async def robust_document_processing(self, file_paths: List[str]) -> Dict[str, Any]:
-        """Improved error handling with detailed logging."""
+
+    async def robust_document_processing(self, file_paths: List[str], file_contents: List[bytes] = None) -> Dict[str, Any]:
+        """🔧 FIXED: Improved error handling with document content tracking."""
         processing_results = []
         
-        for file_path in file_paths:
+        for i, file_path in enumerate(file_paths):
             try:
-                result = await self._process_single_file(file_path)
+                content = file_contents[i] if file_contents and i < len(file_contents) else None
+                result = await self._process_single_file(file_path, content)
                 processing_results.append({"file": file_path, "status": "success", "documents": result})
             except Exception as e:
                 logger.error(f"Failed to process {file_path}: {e}")
                 processing_results.append({"file": file_path, "status": "failed", "error": str(e)})
-        
+
         # Don't fail entirely if some files processed successfully
         successful_docs = []
         for r in processing_results:
             if r["status"] == "success":
                 successful_docs.extend(r["documents"])
-        
+
         if not successful_docs:
             raise HTTPException(status_code=500, detail="No documents processed successfully")
-        
+
         return {
             "results": processing_results,
             "documents": successful_docs,
             "total_successful": len([r for r in processing_results if r["status"] == "success"]),
             "total_failed": len([r for r in processing_results if r["status"] == "failed"])
         }
-    
-    async def load_and_process_documents(self, file_paths: List[str]) -> Dict[str, Any]:
-        """Process multiple files with enhanced error handling and domain-adaptive chunking."""
+
+    async def load_and_process_documents(self, file_paths: List[str], file_contents: List[bytes] = None) -> Dict[str, Any]:
+        """🔧 FIXED: Process multiple files with document isolation and enhanced error handling."""
         try:
-            # Use robust processing
-            result = await self.robust_document_processing(file_paths)
+            # Use robust processing with content tracking
+            result = await self.robust_document_processing(file_paths, file_contents)
             all_docs = result["documents"]
-            
+
             # Extract processed and skipped files info
             processed_files = []
             skipped_files = []
@@ -861,198 +891,257 @@ class RAGSystem:
                     processed_files.append(os.path.basename(res["file"]))
                 else:
                     skipped_files.append(os.path.basename(res["file"]))
-            
+
             if not all_docs:
                 logger.warning("⚠️ No documents were successfully processed")
                 raise HTTPException(status_code=500, detail="No documents could be processed successfully")
-            
+
             # ENHANCED: Domain-adaptive text splitter settings
             chunk_size = self.domain_config["chunk_size"]
             chunk_overlap = self.domain_config["chunk_overlap"]
-            
             logger.info(f"🔧 Using domain-adaptive chunking for '{self.document_domain}': chunk_size={chunk_size}, overlap={chunk_overlap}")
-            
+
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 length_function=len,
                 separators=["\n\n", "\n", ". ", " ", ""]
             )
-            
+
             chunked_docs = await asyncio.to_thread(text_splitter.split_documents, all_docs)
             chunked_docs = [doc for doc in chunked_docs if len(doc.page_content.strip()) > 50]
-            
+
             self.documents = chunked_docs
             self.processed_files = processed_files
-            
-            logger.info(f"📄 Created {len(chunked_docs)} chunks from {len(processed_files)} files (domain: {self.document_domain})")
-            
+
+            logger.info(f"📄 Created {len(chunked_docs)} chunks from {len(processed_files)} files (domain: {self.document_domain}, ID: {self.document_id})")
+
             return {
                 'documents': chunked_docs,
                 'processed_files': processed_files,
                 'skipped_files': skipped_files,
                 'total_chunks': len(chunked_docs),
-                'domain': self.document_domain
+                'domain': self.document_domain,
+                'document_id': self.document_id  # 🔧 NEW: Return document ID
             }
-            
+
         except HTTPException:
             raise
         except Exception as e:
             logger.error(f"❌ Error in document processing: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error during document processing: {str(e)}")
-    
-    async def setup_retrievers(self, persist_directory: str = PERSISTENT_CHROMA_DIR):
-        """Initialize vector store and BM25 retriever with persistence optimization."""
+
+    async def setup_retrievers(self):
+        """🔧 FIXED: Initialize isolated vector store and BM25 retriever."""
         global embedding_model
-        
+
         if not self.documents:
             logger.warning("⚠️ No documents available for retriever setup")
             return False
-        
+
+        if not self.document_id:
+            logger.error("❌ Document ID not set - cannot create isolated vector store")
+            return False
+
         try:
-            # PERFORMANCE OPTIMIZATION: Check if embeddings already exist
-            domain_persist_dir = f"{persist_directory}_{self.document_domain}"
-            
-            if os.path.exists(f"{domain_persist_dir}/chroma.sqlite3"):
-                logger.info(f"✅ Loading existing vector store for domain '{self.document_domain}' from persistent directory")
+            # 🔧 FIXED: Use isolated vector store path
+            if os.path.exists(f"{self.vectorstore_path}/chroma.sqlite3"):
+                logger.info(f"✅ Loading existing isolated vector store: {self.vectorstore_path}")
                 self.vector_store = Chroma(
-                    persist_directory=domain_persist_dir,
+                    persist_directory=self.vectorstore_path,
                     embedding_function=embedding_model
                 )
+                
+                # 🔧 NEW: Verify this vector store contains our document
+                try:
+                    # Test query to verify content
+                    test_results = self.vector_store.similarity_search("test", k=1)
+                    if test_results and test_results[0].metadata.get('document_id') != self.document_id:
+                        logger.warning(f"⚠️ Vector store contains different document. Recreating for document ID: {self.document_id}")
+                        shutil.rmtree(self.vectorstore_path)
+                        raise FileNotFoundError("Stale vector store detected")
+                except Exception:
+                    logger.warning(f"⚠️ Unable to verify vector store content. Recreating for document ID: {self.document_id}")
+                    if os.path.exists(self.vectorstore_path):
+                        shutil.rmtree(self.vectorstore_path)
+                    raise FileNotFoundError("Vector store verification failed")
             else:
-                logger.info(f"🔍 Creating new vector store for domain '{self.document_domain}' in {domain_persist_dir}...")
+                logger.info(f"🔍 Creating new isolated vector store: {self.vectorstore_path}")
+                
+                # Ensure directory exists
+                os.makedirs(os.path.dirname(self.vectorstore_path), exist_ok=True)
+                
                 self.vector_store = await asyncio.to_thread(
                     Chroma.from_documents,
                     documents=self.documents,
                     embedding=embedding_model,
-                    persist_directory=domain_persist_dir
+                    persist_directory=self.vectorstore_path
                 )
-                logger.info(f"✅ New vector store created and persisted for domain '{self.document_domain}'")
-            
-            logger.info("🔍 Setting up BM25 retriever...")
+                
+                logger.info(f"✅ New isolated vector store created: {self.vectorstore_path}")
+
+            logger.info("🔍 Setting up BM25 retriever with document isolation...")
             self.bm25_retriever = BM25Retriever.from_documents(self.documents)
-            
+
             # Domain-adaptive retrieval settings
             self.bm25_retriever.k = self.domain_config["semantic_search_k"] + 3  # Slightly higher for BM25
-            
-            logger.info("✅ Retrievers setup complete")
+
+            logger.info("✅ Isolated retrievers setup complete")
             return True
-            
+
         except Exception as e:
-            logger.error(f"❌ Failed to setup retrievers: {str(e)}")
+            logger.error(f"❌ Failed to setup isolated retrievers: {str(e)}")
             return False
-    
+
     def enhanced_document_search(self, query: str, top_k: int = None) -> List[Document]:
-        """Multi-strategy document retrieval with domain adaptation."""
+        """🔧 FIXED: Multi-strategy document retrieval with document isolation."""
         if top_k is None:
             top_k = self.domain_config["semantic_search_k"]
-        
+
         all_docs = []
-        
-        # Strategy 1: Semantic search
+
+        # Strategy 1: Semantic search with document filtering
         if self.vector_store:
-            semantic_results = self.vector_store.similarity_search(query, k=top_k)
-            all_docs.extend(semantic_results)
-        
-        # Strategy 2: BM25 search
+            try:
+                # 🔧 NEW: Filter by document ID to prevent cross-document contamination
+                semantic_results = self.vector_store.similarity_search(
+                    query, 
+                    k=top_k,
+                    filter={"document_id": self.document_id}  # 🔧 KEY FIX: Filter by document ID
+                )
+                all_docs.extend(semantic_results)
+                logger.info(f"🔍 Semantic search returned {len(semantic_results)} results for document {self.document_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Semantic search failed: {e}, falling back to unfiltered search")
+                # Fallback to unfiltered search if filtering fails
+                semantic_results = self.vector_store.similarity_search(query, k=top_k)
+                # Manually filter by document_id
+                filtered_results = [doc for doc in semantic_results if doc.metadata.get('document_id') == self.document_id]
+                all_docs.extend(filtered_results)
+                logger.info(f"🔍 Fallback search returned {len(filtered_results)} filtered results")
+
+        # Strategy 2: BM25 search (already isolated to current documents)
         if self.bm25_retriever:
             bm25_results = self.bm25_retriever.get_relevant_documents(query)
-            all_docs.extend(bm25_results[:top_k])
-        
-        # Strategy 3: Domain-specific pattern matching
+            # Additional filtering for safety
+            filtered_bm25 = [doc for doc in bm25_results[:top_k] if doc.metadata.get('document_id') == self.document_id]
+            all_docs.extend(filtered_bm25)
+            logger.info(f"🔍 BM25 search returned {len(filtered_bm25)} results for document {self.document_id}")
+
+        # Strategy 3: Domain-specific pattern matching (with document filtering)
         query_lower = query.lower()
-        
         if self.document_domain == "insurance":
             # Insurance-specific patterns
             if "grace period" in query_lower:
                 pattern_docs = self._pattern_search(r"grace\s+period")
                 all_docs.extend(pattern_docs[:5])
-            
             if "waiting period" in query_lower:
                 pattern_docs = self._pattern_search(r"waiting\s+period")
                 all_docs.extend(pattern_docs[:5])
-                
         elif self.document_domain == "physics":
             # Physics-specific patterns
             if "newton" in query_lower or "principia" in query_lower:
                 pattern_docs = self._pattern_search(r"newton|principia|axiom|proposition")
                 all_docs.extend(pattern_docs[:5])
-                
         elif self.document_domain == "legal":
             # Legal-specific patterns
             if "article" in query_lower or "clause" in query_lower:
                 pattern_docs = self._pattern_search(r"article|clause|section|subsection")
                 all_docs.extend(pattern_docs[:5])
-        
-        # Remove duplicates while preserving order
+
+        # Remove duplicates while preserving order and ensuring document isolation
         seen_content = set()
         unique_docs = []
         for doc in all_docs:
-            if doc.page_content not in seen_content:
+            # 🔧 CRITICAL FIX: Only include docs from current document
+            if (doc.page_content not in seen_content and 
+                doc.metadata.get('document_id') == self.document_id):
                 unique_docs.append(doc)
                 seen_content.add(doc.page_content)
-        
+
+        logger.info(f"🔍 Document search for '{self.document_domain}' domain returned {len(unique_docs)} unique results from document {self.document_id}")
         return unique_docs[:top_k]
-    
+
     def _pattern_search(self, pattern: str, max_results: int = 5) -> List[Document]:
-        """Search for documents containing specific patterns."""
+        """🔧 FIXED: Search for documents containing specific patterns with document isolation."""
         pattern_docs = []
         compiled_pattern = re.compile(pattern, re.IGNORECASE)
         
         for doc in self.documents:
-            if compiled_pattern.search(doc.page_content):
+            # 🔧 CRITICAL: Only search within current document
+            if (doc.metadata.get('document_id') == self.document_id and
+                compiled_pattern.search(doc.page_content)):
                 pattern_docs.append(doc)
                 if len(pattern_docs) >= max_results:
                     break
         
+        logger.info(f"🔍 Pattern search for '{pattern}' found {len(pattern_docs)} results in document {self.document_id}")
         return pattern_docs
-    
+
     def retrieve_and_rerank(self, query: str, top_k: int = None) -> Tuple[List[Document], List[float]]:
-        """Retrieve and rerank documents based on query with enhanced search."""
+        """🔧 FIXED: Retrieve and rerank documents with proper isolation."""
         global reranker
-        
+
         if top_k is None:
             top_k = self.domain_config["context_docs"]
-        
+
         if not self.vector_store or not self.bm25_retriever:
             logger.warning("⚠️ Retrievers not initialized")
             return [], []
-        
+
         try:
-            # Use enhanced search for better retrieval
+            # Use enhanced search with document isolation
             retrieved_docs = self.enhanced_document_search(query, top_k=15)
-            
+
             if not retrieved_docs:
-                logger.warning("⚠️ No documents retrieved")
+                logger.warning(f"⚠️ No documents retrieved for document {self.document_id}")
                 return [], []
+
+            # 🔧 VERIFICATION: Ensure all retrieved docs are from current document
+            verified_docs = []
+            for doc in retrieved_docs:
+                if doc.metadata.get('document_id') == self.document_id:
+                    verified_docs.append(doc)
+                else:
+                    logger.warning(f"⚠️ Filtered out document from different source: {doc.metadata.get('source_file')} (ID: {doc.metadata.get('document_id')})")
             
+            if not verified_docs:
+                logger.error(f"❌ No documents from current document {self.document_id} after verification")
+                return [], []
+
             # Rerank using cross-encoder
-            query_doc_pairs = [[query, doc.page_content] for doc in retrieved_docs]
+            query_doc_pairs = [[query, doc.page_content] for doc in verified_docs]
             similarity_scores = reranker.predict(query_doc_pairs)
-            
+
             # Sort by relevance score
             doc_score_pairs = sorted(
-                list(zip(retrieved_docs, similarity_scores)),
+                list(zip(verified_docs, similarity_scores)),
                 key=lambda x: x[1],
                 reverse=True
             )
-            
+
             top_docs = [pair[0] for pair in doc_score_pairs[:top_k]]
             top_scores = [float(pair[1]) for pair in doc_score_pairs[:top_k]]
+
+            logger.info(f"🔍 Retrieved and reranked {len(top_docs)} documents for document {self.document_id} (domain: {self.document_domain})")
             
-            logger.info(f"🔍 Retrieved and reranked {len(top_docs)} documents for domain '{self.document_domain}'")
+            # 🔧 FINAL VERIFICATION: Log source files to confirm isolation
+            source_files = [doc.metadata.get('source_file', 'Unknown') for doc in top_docs]
+            unique_sources = list(set(source_files))
+            logger.info(f"🔍 Retrieved content from sources: {unique_sources}")
+            
             return top_docs, top_scores
-            
+
         except Exception as e:
             logger.error(f"❌ Error in retrieve_and_rerank: {str(e)}")
             return [], []
 
 class DecisionEngine:
     """Enhanced decision engine with multi-domain support and query type classification."""
-    
+
     def __init__(self):
         pass
-    
+
     def _get_domain_specific_prompt_instructions(self, domain: str, query: str) -> str:
         """Get domain-specific instructions for better accuracy."""
         domain_instructions = {
@@ -1097,21 +1186,21 @@ When analyzing insurance content:
 - Provide structured decision-making rationale
 """
         }
-        
+
         base_instruction = domain_instructions.get(domain, "")
-        
+
         # Add query-specific enhancements
         if "newton" in query.lower() or "physics" in query.lower():
             base_instruction += "\nFor physics questions, include mathematical relationships and cite specific propositions from Principia."
         elif "law" in query.lower() or "rights" in query.lower():
             base_instruction += "\nFor legal questions, reference specific articles, clauses, or legal principles mentioned in the document."
-        
+
         return base_instruction
-    
+
     async def get_general_document_answer(self, query: str, context_docs: List[Document], domain: str = "general") -> GeneralDocumentResponse:
         """Handle any type of document with generic QA and domain adaptation."""
         global openai_client
-        
+
         if not context_docs:
             return GeneralDocumentResponse(
                 query_type="GENERAL_DOCUMENT_QA",
@@ -1121,20 +1210,23 @@ When analyzing insurance content:
                 source_documents=[],
                 reasoning="No document content available for analysis."
             )
-        
+
         try:
             context = ""
             source_files = []
             
             for i, doc in enumerate(context_docs):
-                context += f"\n--- Document Section {i+1} | Source: {doc.metadata.get('source_file', 'Unknown')} ---\n"
+                # 🔧 NEW: Include document ID in context for verification
+                doc_id = doc.metadata.get('document_id', 'Unknown')
+                source_file = doc.metadata.get('source_file', 'Unknown')
+                context += f"\n--- Document Section {i+1} | Source: {source_file} | ID: {doc_id} ---\n"
                 context += doc.page_content + "\n"
-                if doc.metadata.get('source_file'):
-                    source_files.append(doc.metadata.get('source_file'))
-            
+                if source_file not in source_files:
+                    source_files.append(source_file)
+
             # Get domain-specific instructions
             domain_instructions = self._get_domain_specific_prompt_instructions(domain, query)
-            
+
             prompt = f"""You are a helpful document analysis assistant specialized in {domain} documents. Answer the question accurately based on the provided document content.
 
 Document Content:
@@ -1152,9 +1244,9 @@ Instructions:
 {domain_instructions}
 
 Provide a direct, informative answer that addresses the user's question comprehensively."""
-            
+
             logger.info(f"🤖 Calling OpenAI API for general document QA (domain: {domain})...")
-            
+
             response = await openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -1170,29 +1262,29 @@ Provide a direct, informative answer that addresses the user's question comprehe
                 temperature=0.1,
                 max_tokens=2000
             )
-            
+
             answer = response.choices[0].message.content
-            
+
             # Determine confidence based on answer quality and context relevance
             confidence = "high"
             reasoning = f"Answer generated from {len(context_docs)} relevant document sections"
-            
+
             if "not found" in answer.lower() or "no information" in answer.lower():
                 confidence = "low"
                 reasoning = "Limited information available in the document content"
             elif "unclear" in answer.lower() or "ambiguous" in answer.lower():
                 confidence = "medium"
                 reasoning = "Some ambiguity in the source material"
-            
+
             return GeneralDocumentResponse(
                 query_type="GENERAL_DOCUMENT_QA",
                 domain=domain,
                 answer=answer,
                 confidence=confidence,
-                source_documents=list(set(source_files)),  # Remove duplicates
+                source_documents=source_files,
                 reasoning=reasoning
             )
-            
+
         except Exception as e:
             logger.error(f"❌ Error in general document QA: {str(e)}")
             return GeneralDocumentResponse(
@@ -1203,7 +1295,7 @@ Provide a direct, informative answer that addresses the user's question comprehe
                 source_documents=[],
                 reasoning="System error during processing"
             )
-    
+
     # Insurance-specific methods (preserved from original)
     def _get_policy_info_prompt(self) -> str:
         """Returns prompt template for policy information queries."""
@@ -1231,7 +1323,7 @@ You are a policy information assistant specializing in Bajaj Insurance products.
 **RESPONSE FORMAT:**
 Provide a clear, informative answer that directly addresses the user's question about policy information.
 """
-    
+
     def _get_structured_prompt_template(self) -> str:
         """Returns a structured analysis prompt for cleaner output with enhanced clause mapping."""
         return """
@@ -1264,33 +1356,33 @@ For each claim component, consider:
 
 **REQUIRED OUTPUT FORMAT (JSON):**
 {{
-  "status": "[APPROVED | PARTIAL_PAYMENT | REJECTED | NEEDS_MANUAL_REVIEW | INSUFFICIENT_INFORMATION]",
-  "confidence": [Float between 0.0 and 1.0],
-  "approvedAmount": [Total approved amount in INR],
-  "rejectedAmount": [Total rejected amount in INR],
-  "breakdown": {{
-    "approved": [
-      {{
-        "component": "Component name (e.g., Hospitalization, Surgery, Medicines)",
-        "amount": [Amount in INR],
-        "reason": "Brief reason for approval with specific policy reference"
-      }}
+    "status": "[APPROVED | PARTIAL_PAYMENT | REJECTED | NEEDS_MANUAL_REVIEW | INSUFFICIENT_INFORMATION]",
+    "confidence": [Float between 0.0 and 1.0],
+    "approvedAmount": [Total approved amount in INR],
+    "rejectedAmount": [Total rejected amount in INR],
+    "breakdown": {{
+        "approved": [
+            {{
+                "component": "Component name (e.g., Hospitalization, Surgery, Medicines)",
+                "amount": [Amount in INR],
+                "reason": "Brief reason for approval with specific policy reference"
+            }}
+        ],
+        "rejected": [
+            {{
+                "component": "Component name",
+                "amount": [Amount in INR],
+                "reason": "Brief reason for rejection (policy clause, exclusion, etc.) with specific reference"
+            }}
+        ]
+    }},
+    "keyPolicyReferences": [
+        {{
+            "title": "Specific policy section or clause name",
+            "note": "Detailed explanation of how this clause applies to the claim components"
+        }}
     ],
-    "rejected": [
-      {{
-        "component": "Component name",
-        "amount": [Amount in INR],
-        "reason": "Brief reason for rejection (policy clause, exclusion, etc.) with specific reference"
-      }}
-    ]
-  }},
-  "keyPolicyReferences": [
-    {{
-      "title": "Specific policy section or clause name",
-      "note": "Detailed explanation of how this clause applies to the claim components"
-    }}
-  ],
-  "summary": "Comprehensive paragraph summary of the overall decision, key policy factors considered, specific clauses applied, and final outcome with total amounts and percentages."
+    "summary": "Comprehensive paragraph summary of the overall decision, key policy factors considered, specific clauses applied, and final outcome with total amounts and percentages."
 }}
 
 **CRITICAL INSTRUCTIONS:**
@@ -1306,11 +1398,11 @@ For each claim component, consider:
 - If no components can be determined, provide meaningful error in status
 - Prioritize accuracy over speed in clause mapping
 """
-    
+
     async def get_policy_info(self, query: str, context_docs: List[Document]) -> PolicyInfoResponse:
         """Generate policy information response for non-claim queries."""
         global openai_client
-        
+
         if not context_docs:
             return PolicyInfoResponse(
                 question=query,
@@ -1318,23 +1410,25 @@ For each claim component, consider:
                 confidence=0.0,
                 sources=[]
             )
-        
+
         try:
             context_text = ""
             sources = []
             
             for i, doc in enumerate(context_docs):
-                context_text += f"\n--- Document Excerpt {i+1} | Source: {doc.metadata.get('source_file', 'Unknown')} ---\n"
+                source_file = doc.metadata.get('source_file', 'Unknown')
+                context_text += f"\n--- Document Excerpt {i+1} | Source: {source_file} ---\n"
                 context_text += doc.page_content + "\n"
-                sources.append(doc.metadata.get('source_file', 'Unknown'))
-            
+                if source_file not in sources:
+                    sources.append(source_file)
+
             prompt = self._get_policy_info_prompt().format(
                 query=query,
                 context=context_text
             )
-            
+
             logger.info("🤖 Calling OpenAI API for policy information...")
-            
+
             response = await openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -1350,22 +1444,22 @@ For each claim component, consider:
                 temperature=0.0,
                 max_tokens=2000
             )
-            
+
             answer = response.choices[0].message.content
-            
+
             # Extract policy section if mentioned
             policy_section = None
             if any(word in answer.lower() for word in ['section', 'clause', 'article']):
                 policy_section = "Policy document referenced"
-            
+
             return PolicyInfoResponse(
                 question=query,
                 answer=answer,
                 policy_section=policy_section,
                 confidence=0.8,  # High confidence for policy info
-                sources=list(set(sources))  # Remove duplicates
+                sources=sources
             )
-            
+
         except Exception as e:
             logger.error(f"❌ Error in policy info generation: {str(e)}")
             return PolicyInfoResponse(
@@ -1374,12 +1468,12 @@ For each claim component, consider:
                 confidence=0.0,
                 sources=[]
             )
-    
+
     async def get_structured_decision(self, query: str, context_docs: List[Document],
-                                     similarity_scores: List[float] = None) -> Dict[str, Any]:
+                                    similarity_scores: List[float] = None) -> Dict[str, Any]:
         """Generate structured decision based on query and retrieved documents with enhanced clause mapping."""
         global openai_client
-        
+
         if not context_docs:
             return {
                 "status": "INSUFFICIENT_INFORMATION",
@@ -1390,21 +1484,22 @@ For each claim component, consider:
                 "keyPolicyReferences": [{"title": "No Documents", "note": "No relevant policy documents found to analyze the claim."}],
                 "summary": "Insufficient information in policy documents to analyze the claim."
             }
-        
+
         try:
             context_text = ""
             for i, doc in enumerate(context_docs):
                 score_info = f" (Relevance: {similarity_scores[i]:.2f})" if similarity_scores else ""
-                context_text += f"\n--- Document Excerpt {i+1}{score_info} | Source: {doc.metadata.get('source_file', 'Unknown')} ---\n"
+                source_file = doc.metadata.get('source_file', 'Unknown')
+                context_text += f"\n--- Document Excerpt {i+1}{score_info} | Source: {source_file} ---\n"
                 context_text += doc.page_content + "\n"
-            
+
             prompt = self._get_structured_prompt_template().format(
                 query=query,
                 context=context_text
             )
-            
+
             logger.info("🤖 Calling OpenAI API for structured BAJAJ Insurance analysis with enhanced clause mapping...")
-            
+
             response = await openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -1421,19 +1516,19 @@ For each claim component, consider:
                 max_tokens=3500,
                 response_format={"type": "json_object"}
             )
-            
+
             response_content = response.choices[0].message.content
             logger.info("✅ Received structured response from OpenAI with clause mapping")
-            
+
             try:
                 decision_data = json.loads(response_content)
                 
                 # Validate, sanitize, and enhance clause mapping
                 decision_data = await self._sanitize_and_enhance_structured_response(decision_data, query, context_text)
-                
+
                 logger.info(f"✅ Enhanced structured decision: {decision_data['status']} - Approved: ₹{decision_data['approvedAmount']:,.2f} | Clauses: {len(decision_data['keyPolicyReferences'])}")
                 return decision_data
-                
+
             except (json.JSONDecodeError, ValueError, KeyError) as e:
                 logger.error(f"❌ Failed to parse structured response: {str(e)}")
                 logger.error(f"❌ Raw response content: {response_content[:500]}...")
@@ -1447,11 +1542,11 @@ For each claim component, consider:
                     "keyPolicyReferences": [{"title": "System Error", "note": f"Error parsing response: {str(e)}"}],
                     "summary": "System error occurred during analysis. Manual review required."
                 }
-                
+
         except Exception as e:
             logger.error(f"❌ Error in structured decision generation: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Error during structured analysis: {str(e)}")
-    
+
     async def _sanitize_and_enhance_structured_response(self, decision_data: Dict[str, Any], original_query: str, context_text: str) -> Dict[str, Any]:
         """Sanitize, validate, and enhance the structured response with improved clause mapping."""
         # Set defaults for missing fields
@@ -1464,23 +1559,22 @@ For each claim component, consider:
             "keyPolicyReferences": [],
             "summary": "Analysis completed with enhanced clause mapping."
         }
-        
+
         # Ensure all required fields exist
         for field, default_value in defaults.items():
             if field not in decision_data:
                 decision_data[field] = default_value
                 logger.warning(f"⚠️ Missing field '{field}' - using default value")
-        
+
         # Sanitize breakdown components
         if "breakdown" not in decision_data or not isinstance(decision_data["breakdown"], dict):
             decision_data["breakdown"] = {"approved": [], "rejected": []}
-        
+
         if "approved" not in decision_data["breakdown"]:
             decision_data["breakdown"]["approved"] = []
-        
         if "rejected" not in decision_data["breakdown"]:
             decision_data["breakdown"]["rejected"] = []
-        
+
         # Parse and validate amounts in breakdown components
         all_components = []
         for component_type in ["approved", "rejected"]:
@@ -1494,31 +1588,29 @@ For each claim component, consider:
                             "reason": str(component.get("reason", "No reason provided")),
                             "status": component_type  # Add status for clause mapping
                         }
-                        
+
                         # Validate amount is non-negative
                         if sanitized_component["amount"] < 0:
                             logger.warning(f"⚠️ Negative amount found: {sanitized_component['amount']}, setting to 0")
                             sanitized_component["amount"] = 0.0
-                        
+
                         sanitized_components.append(sanitized_component)
                         all_components.append(sanitized_component)
-                        
                     except Exception as e:
                         logger.warning(f"⚠️ Error sanitizing component {component}: {e}")
                         continue
-            
+
             decision_data["breakdown"][component_type] = [
                 {k: v for k, v in comp.items() if k != "status"}
                 for comp in sanitized_components
             ]
-        
+
         # Recalculate totals from breakdown
         approved_total = round(sum(item["amount"] for item in decision_data["breakdown"]["approved"]), 2)
         rejected_total = round(sum(item["amount"] for item in decision_data["breakdown"]["rejected"]), 2)
-        
         decision_data["approvedAmount"] = approved_total
         decision_data["rejectedAmount"] = rejected_total
-        
+
         # Apply advanced clause mapping to components
         try:
             if all_components:
@@ -1551,7 +1643,7 @@ For each claim component, consider:
                 
                 decision_data["keyPolicyReferences"] = combined_clauses
                 logger.info(f"✅ Enhanced clause mapping: {len(combined_clauses)} policy references mapped")
-                
+
         except Exception as clause_error:
             logger.error(f"❌ Error in enhanced clause mapping: {clause_error}")
             # Ensure at least some policy references exist
@@ -1560,7 +1652,7 @@ For each claim component, consider:
                     "title": "Policy Terms and Conditions",
                     "note": f"Please refer to the complete policy document for detailed terms. Clause mapping error: {str(clause_error)}"
                 }]
-        
+
         # Validate amounts consistency
         total_calculated = approved_total + rejected_total
         if total_calculated > 0:
@@ -1587,10 +1679,10 @@ For each claim component, consider:
                             break
             except Exception:
                 pass
-        
+
         # Ensure confidence is within bounds
         decision_data["confidence"] = max(0.0, min(1.0, float(decision_data.get("confidence", 0.0))))
-        
+
         # Validate amounts using utility function
         is_valid, validation_message = validate_amounts(decision_data["breakdown"])
         if not is_valid:
@@ -1599,7 +1691,7 @@ For each claim component, consider:
                 "title": "Amount Validation Notice",
                 "note": validation_message
             })
-        
+
         # Enhance summary with clause mapping information
         if decision_data.get("summary") and len(decision_data.get("keyPolicyReferences", [])) > 0:
             clause_count = len(decision_data["keyPolicyReferences"])
@@ -1607,9 +1699,9 @@ For each claim component, consider:
             if "policy" not in enhanced_summary.lower():
                 enhanced_summary += f" This analysis references {clause_count} relevant policy clause(s) for comprehensive coverage determination."
             decision_data["summary"] = enhanced_summary
-        
+
         return decision_data
-    
+
     # 🔧 FIXED: Main routing method with corrected query classification
     async def process_query(self, query: str, rag_system: RAGSystem) -> Union[PolicyInfoResponse, Dict[str, Any], GeneralDocumentResponse]:
         """Route query to appropriate processing method based on query type and domain."""
@@ -1617,16 +1709,15 @@ For each claim component, consider:
         document_content = ""
         if rag_system.documents:
             document_content = ' '.join([doc.page_content for doc in rag_system.documents[:3]])  # First 3 docs
-        
+
         # 🔧 USE FIXED CLASSIFICATION
         query_type, domain = classify_query_type(query, document_content)
-        
         logger.info(f"🔍 Query classified as: {query_type}, Domain: {domain}")
-        
+
         # Retrieve relevant documents with domain-adaptive settings
         top_k = rag_system.domain_config.get("context_docs", 7)
         retrieved_docs, similarity_scores = rag_system.retrieve_and_rerank(query, top_k=top_k)
-        
+
         if query_type == "INSURANCE_POLICY_INFO":
             return await self.get_policy_info(query, retrieved_docs)
         elif query_type in ["INSURANCE_CLAIM_PROCESSING", "INSURANCE_GENERAL"]:
@@ -1647,7 +1738,7 @@ async def process_questions_parallel_structured(questions: List[str], rag_system
         try:
             # Use the enhanced routing method
             result = await decision_engine.process_query(question, rag_system)
-            
+
             # Convert to appropriate response format
             if isinstance(result, (PolicyInfoResponse, GeneralDocumentResponse)):
                 return result
@@ -1655,7 +1746,7 @@ async def process_questions_parallel_structured(questions: List[str], rag_system
                 # Handle structured claim response
                 if not isinstance(result, dict):
                     raise ValueError("Invalid decision result format")
-                
+
                 # Safe component creation with better error handling
                 try:
                     approved_components = []
@@ -1664,34 +1755,34 @@ async def process_questions_parallel_structured(questions: List[str], rag_system
                             approved_components.append(ClaimComponent(**comp))
                         else:
                             logger.warning(f"⚠️ Skipping invalid approved component: {comp}")
-                    
+
                     rejected_components = []
                     for comp in result.get("breakdown", {}).get("rejected", []):
                         if isinstance(comp, dict) and all(key in comp for key in ["component", "amount", "reason"]):
                             rejected_components.append(ClaimComponent(**comp))
                         else:
                             logger.warning(f"⚠️ Skipping invalid rejected component: {comp}")
-                    
+
                     policy_references = []
                     for ref in result.get("keyPolicyReferences", []):
                         if isinstance(ref, dict) and all(key in ref for key in ["title", "note"]):
                             policy_references.append(PolicyReference(**ref))
                         else:
                             logger.warning(f"⚠️ Skipping invalid policy reference: {ref}")
-                    
+
                     # Ensure we have at least one policy reference
                     if not policy_references:
                         policy_references.append(PolicyReference(
                             title="General Policy Terms",
                             note="Please refer to the complete policy document for detailed coverage terms and conditions."
                         ))
-                        
+
                 except Exception as comp_error:
                     logger.error(f"❌ Error creating components: {comp_error}")
                     approved_components = []
                     rejected_components = []
                     policy_references = [PolicyReference(title="Component Processing Error", note=f"Error processing components: {str(comp_error)}")]
-                
+
                 # Create structured response with safe field access
                 structured_response = StructuredClaimResponse(
                     status=result.get("status", "NEEDS_MANUAL_REVIEW"),
@@ -1705,10 +1796,10 @@ async def process_questions_parallel_structured(questions: List[str], rag_system
                     keyPolicyReferences=policy_references,
                     summary=result.get("summary", "Analysis completed with multi-domain support.")
                 )
-                
+
                 logger.info(f"✅ Structured response: {len(approved_components)} approved, {len(rejected_components)} rejected, {len(policy_references)} policy references")
                 return structured_response
-                
+
         except Exception as e:
             logger.error(f"❌ Error in structured processing for question: {str(e)}")
             
@@ -1725,463 +1816,429 @@ async def process_questions_parallel_structured(questions: List[str], rag_system
                     domain=domain,
                     answer=f"An error occurred while processing this question: {str(e)}",
                     confidence="low",
-                    source_documents=[],
-                    reasoning="System error during processing"
+                                        source_documents=[],
+                    reasoning=f"System error during processing: {str(e)}"
                 )
             else:
+                # Return insurance error response
                 return StructuredClaimResponse(
                     status="NEEDS_MANUAL_REVIEW",
                     confidence=0.0,
                     approvedAmount=0.0,
                     rejectedAmount=0.0,
                     breakdown=ClaimBreakdown(approved=[], rejected=[]),
-                    keyPolicyReferences=[PolicyReference(title="Processing Error", note=f"Error in processing: {str(e)}")],
-                    summary=f"An error occurred while processing this question: {str(e)}"
+                    keyPolicyReferences=[PolicyReference(
+                        title="Processing Error",
+                        note=f"An error occurred during analysis: {str(e)}"
+                    )],
+                    summary=f"Error processing question: {str(e)}"
                 )
-    
-    # Process questions in parallel
-    tasks = [process_single_question_structured(question) for question in questions]
-    results = await asyncio.gather(*tasks)
-    
-    return results
 
-# Global instances
-decision_engine = DecisionEngine()
+    # Process questions concurrently with controlled parallelism
+    semaphore = asyncio.Semaphore(3)  # Limit concurrent processing
+
+    async def process_with_semaphore(question: str):
+        async with semaphore:
+            return await process_single_question_structured(question)
+
+    tasks = [process_with_semaphore(q) for q in questions]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Handle any exceptions in results
+    processed_results = []
+    for i, result in enumerate(results):
+        if isinstance(result, Exception):
+            logger.error(f"❌ Error processing question {i+1}: {str(result)}")
+            # Create error response
+            processed_results.append(GeneralDocumentResponse(
+                query_type="GENERAL_DOCUMENT_QA",
+                domain="general",
+                answer=f"An error occurred while processing this question: {str(result)}",
+                confidence="low",
+                source_documents=[],
+                reasoning="Error during parallel processing"
+            ))
+        else:
+            processed_results.append(result)
+
+    logger.info(f"✅ Completed parallel processing of {len(questions)} questions")
+    return processed_results
 
 # --- API Endpoints ---
 
-@app.get("/", tags=["General"])
-async def root():
-    """Health check endpoint - No authentication required."""
-    return {
-        "message": "Multi-Domain Document QA API is operational",
-        "version": "4.0.0",
-        "system": "Multi-Domain Document QA System with Enhanced Insurance Capabilities",
-        "supported_domains": list(DOMAIN_CONFIG.keys()),
-        "supported_formats": ["PDF (.pdf)", "Word Documents (.docx)", "Plain Text (.txt)"],
-        "authentication": "Bearer token required for /api/v1 endpoints",
-        "key_features": [
-            "Multi-domain document analysis (Physics, Legal, Academic, Medical, Insurance, General)",
-            "Domain-adaptive document processing and chunking",
-            "Intelligent query type classification",
-            "Specialized insurance claim processing with clause mapping",
-            "General document QA for any domain",
-            "Domain-specific prompt optimization",
-            "Enhanced error handling and fallback mechanisms"
-        ],
-        "accuracy_improvements": [
-            "Domain-specific processing pipelines",
-            "Adaptive chunking based on document type",
-            "Pattern matching for domain-specific terminology",
-            "Context-aware prompt engineering",
-            "Multi-strategy document retrieval"
-        ],
-        "insurance_capabilities": [
-            "Advanced policy clause mapping",
-            "Component-to-clause association",
-            "Amount parsing and validation",
-            "Structured claim decision making",
-            f"{len(COMPONENT_KEYWORDS)} insurance component types supported"
-        ],
-        "classification_fix": "✅ Fixed domain override issue - queries now properly respect document domain detection"
-    }
+@api_v1_router.get("/health")
+async def health_check():
+    """Simple health check endpoint."""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
 
-# ENHANCED: Main HackRx endpoint with multi-domain support
-@api_v1_router.post("/hackrx/run", response_model=EnhancedHackRxResponse, tags=["HackRx"])
-async def hackrx_run(
-    request: HackRxRequest,
-    token: str = Depends(verify_bearer_token)
+@api_v1_router.post("/upload-and-query", response_model=EnhancedHackRxResponse, dependencies=[Depends(verify_bearer_token)])
+async def upload_and_query_documents(
+    request: Request,
+    documents: UploadFile = File(...),
+    questions: str = Form(...)
 ):
-    """
-    Main endpoint for HackRx competition - Enhanced with multi-domain support and intelligent routing
-    """
+    """🔧 FIXED: Upload documents and process questions with proper document isolation."""
     start_time = time.time()
-    request_id = str(uuid.uuid4())[:8]
-    logger.info(f"[{request_id}] 🚀 Starting multi-domain analysis...")
-    
+    logger.info(f"📁 Upload and Query request received - File: {documents.filename}")
+
     try:
-        # Initialize systems
-        rag_system = RAGSystem()
+        # Parse questions
+        try:
+            question_list = json.loads(questions)
+            if not isinstance(question_list, list):
+                raise ValueError("Questions must be a list")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid JSON format for questions")
+
+        if not question_list:
+            raise HTTPException(status_code=400, detail="At least one question is required")
+
+        # Validate uploaded file
+        is_valid, validation_message = validate_uploaded_file(documents)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=validation_message)
+
+        # Read file content for document ID generation
+        file_content = await documents.read()
+        await documents.seek(0)  # Reset file pointer
+
+        # Save file with proper isolation
+        file_path = await save_uploaded_file(documents)
         
-        # Download and process document from URL with enhanced format support
-        logger.info(f"[{request_id}] 📥 Downloading document from URL...")
+        try:
+            # Initialize RAG system with document isolation
+            rag_system = RAGSystem()
+            decision_engine = DecisionEngine()
+
+            # 🔧 FIXED: Process documents with content tracking for proper isolation
+            result = await rag_system.load_and_process_documents([file_path], [file_content])
+            
+            if not result['documents']:
+                raise HTTPException(status_code=500, detail="No documents could be processed")
+
+            # Setup isolated retrievers
+            setup_success = await rag_system.setup_retrievers()
+            if not setup_success:
+                raise HTTPException(status_code=500, detail="Failed to initialize document retrieval system")
+
+            # 🔧 VERIFICATION: Log document isolation details
+            logger.info(f"🔧 Document processing complete:")
+            logger.info(f"   Document ID: {rag_system.document_id}")
+            logger.info(f"   Domain: {rag_system.document_domain}")
+            logger.info(f"   Vector store: {rag_system.vectorstore_path}")
+            logger.info(f"   Total chunks: {len(rag_system.documents)}")
+
+            # Cache the RAG system with document ID
+            if rag_system.document_id:
+                manage_cache()  # Clean old entries if needed
+                DOCUMENT_CACHE[rag_system.document_id] = {
+                    'rag_system': rag_system,
+                    'timestamp': time.time(),
+                    'domain': rag_system.document_domain,
+                    'file_info': result
+                }
+                logger.info(f"✅ Cached RAG system for document: {rag_system.document_id}")
+
+            # Process questions with enhanced structured output
+            answers = await process_questions_parallel_structured(question_list, rag_system, decision_engine)
+
+            processing_time = time.time() - start_time
+            logger.info(f"✅ Upload and Query completed in {processing_time:.2f}s - Document: {rag_system.document_id}")
+
+            return EnhancedHackRxResponse(answers=answers)
+
+        finally:
+            # Cleanup temporary file
+            if os.path.exists(file_path):
+                os.unlink(file_path)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in upload_and_query: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@api_v1_router.post("/process-url", response_model=EnhancedHackRxResponse, dependencies=[Depends(verify_bearer_token)])
+async def process_document_from_url(request: HackRxRequest):
+    """🔧 FIXED: Process document from URL with proper isolation."""
+    start_time = time.time()
+    logger.info(f"🌐 URL processing request: {request.documents}")
+
+    try:
+        # Download document from URL
         async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(str(request.documents))
             response.raise_for_status()
             
-            # Enhanced content type detection
-            content_type = response.headers.get('content-type', '')
-            if not content_type or content_type == 'application/octet-stream':
+            file_content = response.content
+            content_type = response.headers.get('content-type', 'application/pdf')
+            
+            # Detect content type from URL if header is generic
+            if content_type in ['application/octet-stream', 'binary/octet-stream']:
                 content_type = detect_content_type_from_url(str(request.documents))
-            
-            logger.info(f"[{request_id}] 📄 Content type detected: {content_type}")
-            
-            # Save to temporary file with appropriate extension
-            file_extension = get_file_extension_from_content_type(content_type)
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
-                temp_file.write(response.content)
-                temp_file_path = temp_file.name
+
+        # Create temporary file with appropriate extension
+        file_extension = get_file_extension_from_content_type(content_type)
         
+        with tempfile.NamedTemporaryFile(delete=False, suffix=file_extension) as temp_file:
+            temp_file.write(file_content)
+            temp_file_path = temp_file.name
+
         try:
-            # Process document with enhanced error handling
-            logger.info(f"[{request_id}] 🔄 Processing document with multi-domain capabilities...")
-            result = await rag_system.load_and_process_documents([temp_file_path])
+            # Initialize RAG system with document isolation
+            rag_system = RAGSystem()
+            decision_engine = DecisionEngine()
+
+            # 🔧 FIXED: Process with content for proper document ID generation
+            result = await rag_system.load_and_process_documents([temp_file_path], [file_content])
             
-            # Log domain detection results
-            detected_domain = result.get('domain', 'general')
-            logger.info(f"[{request_id}] 🔍 Document domain detected: {detected_domain}")
-            logger.info(f"[{request_id}] 📊 Created {result['total_chunks']} chunks from document")
-            
-            # Setup retrievers with domain-specific configuration
-            retriever_setup_success = await rag_system.setup_retrievers()
-            if not retriever_setup_success:
-                raise HTTPException(status_code=500, detail="Failed to setup document retrievers")
-            
-            logger.info(f"[{request_id}] ✅ Retrievers setup complete for domain: {detected_domain}")
-            
-            # Process questions with enhanced parallel processing
-            logger.info(f"[{request_id}] 🔄 Processing {len(request.questions)} questions with multi-domain support...")
-            
-            answers = await process_questions_parallel_structured(
-                request.questions, 
-                rag_system, 
-                decision_engine
-            )
-            
-            # Log processing results summary
-            domain_counts = {}
-            for answer in answers:
-                if hasattr(answer, 'domain'):
-                    domain = answer.domain
-                elif hasattr(answer, 'query_type'):
-                    domain = "insurance" if "INSURANCE" in answer.query_type else detected_domain
-                else:
-                    domain = detected_domain
-                
-                domain_counts[domain] = domain_counts.get(domain, 0) + 1
-            
+            if not result['documents']:
+                raise HTTPException(status_code=500, detail="No documents could be processed from URL")
+
+            # Setup isolated retrievers
+            setup_success = await rag_system.setup_retrievers()
+            if not setup_success:
+                raise HTTPException(status_code=500, detail="Failed to initialize document retrieval system")
+
+            # 🔧 VERIFICATION: Log document isolation details
+            logger.info(f"🔧 URL document processing complete:")
+            logger.info(f"   Document ID: {rag_system.document_id}")
+            logger.info(f"   Domain: {rag_system.document_domain}")
+            logger.info(f"   Vector store: {rag_system.vectorstore_path}")
+            logger.info(f"   Source URL: {str(request.documents)}")
+
+            # Cache the RAG system
+            if rag_system.document_id:
+                manage_cache()
+                DOCUMENT_CACHE[rag_system.document_id] = {
+                    'rag_system': rag_system,
+                    'timestamp': time.time(),
+                    'domain': rag_system.document_domain,
+                    'file_info': result,
+                    'source_url': str(request.documents)
+                }
+                logger.info(f"✅ Cached RAG system for URL document: {rag_system.document_id}")
+
+            # Process questions
+            answers = await process_questions_parallel_structured(request.questions, rag_system, decision_engine)
+
             processing_time = time.time() - start_time
-            
-            logger.info(f"[{request_id}] ✅ Multi-domain analysis complete!")
-            logger.info(f"[{request_id}] 📊 Processing summary:")
-            logger.info(f"[{request_id}]   - Total questions: {len(request.questions)}")
-            logger.info(f"[{request_id}]   - Processing time: {processing_time:.2f}s")
-            logger.info(f"[{request_id}]   - Domain distribution: {domain_counts}")
-            logger.info(f"[{request_id}]   - Document domain: {detected_domain}")
-            
+            logger.info(f"✅ URL processing completed in {processing_time:.2f}s - Document: {rag_system.document_id}")
+
             return EnhancedHackRxResponse(answers=answers)
-            
+
         finally:
             # Cleanup temporary file
-            try:
+            if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
-                logger.info(f"[{request_id}] 🗑️ Temporary file cleaned up")
-            except Exception as cleanup_error:
-                logger.warning(f"[{request_id}] ⚠️ Failed to cleanup temporary file: {cleanup_error}")
-    
-    except httpx.HTTPStatusError as http_error:
-        logger.error(f"[{request_id}] ❌ HTTP error downloading document: {http_error}")
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Failed to download document from URL: {http_error.response.status_code} {http_error.response.reason_phrase}"
-        )
-    except httpx.RequestError as req_error:
-        logger.error(f"[{request_id}] ❌ Request error: {req_error}")
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Failed to download document: {str(req_error)}"
-        )
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Unexpected error in HackRx endpoint: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
-# Alternative single query endpoint with multi-domain support
-@api_v1_router.post("/query", response_model=UnifiedResponse, tags=["Query Processing"])
-async def process_single_query(
-    query_data: QueryRequest,
-    file: UploadFile = File(..., description="Document file (PDF, DOCX, or TXT)"),
-    token: str = Depends(verify_bearer_token)
-):
-    """
-    Process a single query against an uploaded document with multi-domain support
-    """
-    request_id = str(uuid.uuid4())[:8]
-    logger.info(f"[{request_id}] 🔍 Processing single query with multi-domain support...")
-    
+    except httpx.HTTPError as e:
+        logger.error(f"❌ HTTP error downloading document: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Failed to download document: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Unexpected error in process_document_from_url: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {str(e)}")
+
+@api_v1_router.post("/query", response_model=UnifiedResponse, dependencies=[Depends(verify_bearer_token)])
+async def query_cached_documents(request: QueryRequest):
+    """🔧 FIXED: Query against most recently cached document with proper isolation."""
+    start_time = time.time()
+    logger.info(f"❓ Query request: '{request.query[:100]}...'")
+
     try:
-        # Validate uploaded file
-        is_valid, validation_message = validate_uploaded_file(file)
-        if not is_valid:
-            raise HTTPException(status_code=400, detail=validation_message)
-        
-        # Save and process file
-        file_path = await save_uploaded_file(file)
-        
-        try:
-            # Initialize and setup RAG system
-            rag_system = RAGSystem()
-            result = await rag_system.load_and_process_documents([file_path])
-            
-            detected_domain = result.get('domain', 'general')
-            logger.info(f"[{request_id}] 🔍 Document domain detected: {detected_domain}")
-            
-            await rag_system.setup_retrievers()
-            
-            # Process query with domain-aware routing
-            answer = await decision_engine.process_query(query_data.query, rag_system)
-            
-            # Convert to unified response format
-            if isinstance(answer, GeneralDocumentResponse):
-                return UnifiedResponse(
-                    query_type=answer.query_type,
-                    domain=answer.domain,
-                    answer=answer.answer,
-                    confidence=answer.confidence,
-                    source_documents=answer.source_documents
-                )
-            elif isinstance(answer, PolicyInfoResponse):
-                return UnifiedResponse(
-                    query_type="INSURANCE_POLICY_INFO",
-                    domain="insurance",
-                    answer=answer.answer,
-                    policy_references=answer.sources,
-                    confidence="high" if answer.confidence > 0.7 else "medium",
-                    source_documents=answer.sources
-                )
-            else:
-                # Structured claim response
-                return UnifiedResponse(
-                    query_type="INSURANCE_CLAIM_PROCESSING",
-                    domain="insurance",
-                    answer=answer.get("summary", "Claim analysis completed"),
-                    decision=answer.get("status", "UNKNOWN"),
-                    approved_amount=answer.get("approvedAmount", 0.0),
-                    policy_references=[ref.get("title", "") for ref in answer.get("keyPolicyReferences", [])],
-                    confidence="high" if answer.get("confidence", 0.0) > 0.7 else "medium",
-                    source_documents=["Policy Document"]
-                )
-                
-        finally:
-            # Cleanup uploaded file
-            try:
-                os.unlink(file_path)
-                logger.info(f"[{request_id}] 🗑️ Uploaded file cleaned up")
-            except Exception:
-                pass
+        if not DOCUMENT_CACHE:
+            raise HTTPException(
+                status_code=400, 
+                detail="No documents cached. Please upload a document first using /upload-and-query or /process-url"
+            )
+
+        # Get most recent document from cache
+        latest_doc_id = max(DOCUMENT_CACHE.keys(), key=lambda k: DOCUMENT_CACHE[k]['timestamp'])
+        cached_data = DOCUMENT_CACHE[latest_doc_id]
+        rag_system = cached_data['rag_system']
+        domain = cached_data['domain']
+
+        logger.info(f"🔍 Using cached document: {latest_doc_id} (domain: {domain})")
+
+        # 🔧 VERIFICATION: Ensure we're querying the right document
+        logger.info(f"🔧 Query verification:")
+        logger.info(f"   Document ID: {rag_system.document_id}")
+        logger.info(f"   Vector store: {rag_system.vectorstore_path}")
+        logger.info(f"   Document count: {len(rag_system.documents)}")
+
+        # Initialize decision engine
+        decision_engine = DecisionEngine()
+
+        # Process query with isolated retrieval
+        result = await decision_engine.process_query(request.query, rag_system)
+
+        # Convert to unified response format
+        if isinstance(result, GeneralDocumentResponse):
+            unified_response = UnifiedResponse(
+                query_type=result.query_type,
+                domain=result.domain,
+                answer=result.answer,
+                confidence=result.confidence,
+                source_documents=result.source_documents
+            )
+        elif isinstance(result, PolicyInfoResponse):
+            unified_response = UnifiedResponse(
+                query_type="INSURANCE_POLICY_INFO",
+                domain="insurance",
+                answer=result.answer,
+                confidence="high" if result.confidence > 0.7 else "medium",
+                source_documents=result.sources
+            )
+        else:
+            # Structured claim response
+            unified_response = UnifiedResponse(
+                query_type="INSURANCE_CLAIM_PROCESSING",
+                domain="insurance",
+                answer=result.get("summary", "Claim processed"),
+                decision=result.get("status", "UNKNOWN"),
+                approved_amount=result.get("approvedAmount", 0.0),
+                policy_references=[ref.get("title", "") for ref in result.get("keyPolicyReferences", [])],
+                confidence="high" if result.get("confidence", 0) > 0.7 else "medium",
+                source_documents=[f"Document ID: {latest_doc_id}"]
+            )
+
+        processing_time = time.time() - start_time
+        logger.info(f"✅ Query completed in {processing_time:.2f}s - Document: {latest_doc_id}")
+
+        return unified_response
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ Error in query processing: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Query processing error: {str(e)}")
+
+@api_v1_router.get("/cache-status")
+async def get_cache_status(token: str = Depends(verify_bearer_token)):
+    """Get information about cached documents."""
+    cache_info = {}
     
-    except Exception as e:
-        logger.error(f"[{request_id}] ❌ Error in single query processing: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Health check endpoint with system status
-@api_v1_router.get("/health", tags=["System"])
-async def health_check(token: str = Depends(verify_bearer_token)):
-    """Comprehensive health check with system status"""
-    try:
-        # Check OpenAI client
-        openai_status = "✅ Connected" if openai_client else "❌ Not initialized"
-        
-        # Check embedding model
-        embedding_status = "✅ Loaded" if embedding_model else "❌ Not loaded"
-        
-        # Check reranker
-        reranker_status = "✅ Loaded" if reranker else "❌ Not loaded"
-        
-        # Check cache status
-        cache_status = f"✅ {len(DOCUMENT_CACHE)} documents cached"
-        
-        # Check persistent directory
-        chroma_status = "✅ Available" if os.path.exists(PERSISTENT_CHROMA_DIR) else "❌ Not found"
-        
-        return {
-            "status": "healthy",
-            "timestamp": datetime.now().isoformat(),
-            "version": "4.0.0",
-            "system_components": {
-                "openai_client": openai_status,
-                "embedding_model": embedding_status,
-                "reranker_model": reranker_status,
-                "document_cache": cache_status,
-                "persistent_storage": chroma_status
+    for doc_id, data in DOCUMENT_CACHE.items():
+        cache_info[doc_id] = {
+            "domain": data.get("domain", "unknown"),
+            "timestamp": datetime.fromtimestamp(data["timestamp"]).isoformat(),
+            "file_info": {
+                "processed_files": data.get("file_info", {}).get("processed_files", []),
+                "total_chunks": data.get("file_info", {}).get("total_chunks", 0)
             },
-            "supported_domains": list(DOMAIN_CONFIG.keys()),
-            "domain_configurations": {
-                domain: {
-                    "chunk_size": config["chunk_size"],
-                    "chunk_overlap": config["chunk_overlap"],
-                    "semantic_search_k": config["semantic_search_k"],
-                    "context_docs": config["context_docs"]
-                }
-                for domain, config in DOMAIN_CONFIG.items()
-            },
-            "insurance_components": len(COMPONENT_KEYWORDS),
-            "classification_system": "✅ Fixed domain override issue",
-            "cache_limit": MAX_CACHE_SIZE,
-            "persistent_directory": PERSISTENT_CHROMA_DIR
+            "source_url": data.get("source_url")  # Only present for URL-based documents
         }
-        
-    except Exception as e:
-        logger.error(f"❌ Health check failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Health check failed: {str(e)}")
+    
+    return {
+        "cached_documents": len(DOCUMENT_CACHE),
+        "cache_details": cache_info,
+        "max_cache_size": MAX_CACHE_SIZE
+    }
 
-# System metrics endpoint
-@api_v1_router.get("/metrics", tags=["System"])
-async def get_system_metrics(token: str = Depends(verify_bearer_token)):
-    """Get detailed system metrics and performance data"""
-    try:
-        import psutil
-        import sys
-        
-        # Memory usage
-        memory_info = psutil.virtual_memory()
-        
-        # Disk usage for persistent directory
-        disk_usage = psutil.disk_usage(PERSISTENT_CHROMA_DIR if os.path.exists(PERSISTENT_CHROMA_DIR) else "/tmp")
-        
-        # Cache statistics
-        cache_sizes = {}
-        for doc_id, data in DOCUMENT_CACHE.items():
-            if isinstance(data, dict) and 'vector_store' in data:
-                cache_sizes[doc_id[:8]] = "Vector store cached"
-        
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "system_metrics": {
-                "python_version": f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}",
-                "memory_usage": {
-                    "total_gb": round(memory_info.total / (1024**3), 2),
-                    "available_gb": round(memory_info.available / (1024**3), 2),
-                    "used_percent": memory_info.percent
-                },
-                "disk_usage": {
-                    "total_gb": round(disk_usage.total / (1024**3), 2),
-                    "free_gb": round(disk_usage.free / (1024**3), 2),
-                    "used_percent": round((disk_usage.used / disk_usage.total) * 100, 2)
-                }
-            },
-            "application_metrics": {
-                "document_cache_count": len(DOCUMENT_CACHE),
-                "cache_limit": MAX_CACHE_SIZE,
-                "cached_documents": cache_sizes,
-                "persistent_directory_exists": os.path.exists(PERSISTENT_CHROMA_DIR)
-            },
-            "model_metrics": {
-                "embedding_model": "sentence-transformers/all-MiniLM-L6-v2" if embedding_model else "Not loaded",
-                "reranker_model": "cross-encoder/ms-marco-TinyBERT-L2-v2" if reranker else "Not loaded",
-                "openai_model": "gpt-4o"
-            },
-            "domain_support": {
-                "total_domains": len(DOMAIN_CONFIG),
-                "insurance_components": len(COMPONENT_KEYWORDS),
-                "clause_types": len(CLAUSE_TYPES),
-                "detection_keywords": sum(len(keywords) for keywords in DOMAIN_DETECTION_KEYWORDS.values())
-            }
-        }
-        
-    except ImportError:
-        # If psutil is not available, return basic metrics
-        return {
-            "timestamp": datetime.now().isoformat(),
-            "status": "Limited metrics (psutil not available)",
-            "application_metrics": {
-                "document_cache_count": len(DOCUMENT_CACHE),
-                "cache_limit": MAX_CACHE_SIZE,
-                "persistent_directory_exists": os.path.exists(PERSISTENT_CHROMA_DIR)
-            }
-        }
-    except Exception as e:
-        logger.error(f"❌ Metrics collection failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to collect metrics: {str(e)}")
-
-# Cache management endpoint
-@api_v1_router.post("/admin/clear-cache", tags=["Administration"])
+@api_v1_router.delete("/clear-cache")
 async def clear_document_cache(token: str = Depends(verify_bearer_token)):
-    """Clear the document cache to free up memory"""
+    """Clear all cached documents and vector stores."""
+    global DOCUMENT_CACHE
+    
+    cleared_count = len(DOCUMENT_CACHE)
+    DOCUMENT_CACHE.clear()
+    
+    # Also clear vector stores directory
     try:
-        global DOCUMENT_CACHE
-        
-        cache_count_before = len(DOCUMENT_CACHE)
-        DOCUMENT_CACHE.clear()
-        
-        logger.info(f"🗑️ Document cache cleared: {cache_count_before} entries removed")
-        
-        return {
-            "status": "success",
-            "message": f"Document cache cleared successfully",
-            "entries_removed": cache_count_before,
-            "timestamp": datetime.now().isoformat()
-        }
-        
+        if os.path.exists(VECTORSTORE_BASE_DIR):
+            shutil.rmtree(VECTORSTORE_BASE_DIR)
+            os.makedirs(VECTORSTORE_BASE_DIR, exist_ok=True)
+        logger.info("✅ Vector stores directory cleared")
     except Exception as e:
-        logger.error(f"❌ Failed to clear cache: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to clear cache: {str(e)}")
+        logger.warning(f"⚠️ Failed to clear vector stores: {e}")
+    
+    return {
+        "message": f"Cleared {cleared_count} cached documents and vector stores",
+        "timestamp": datetime.now().isoformat()
+    }
 
-# Add the API router to the main app
+# Add the router to the main app
 app.include_router(api_v1_router)
+
+# Root endpoint
+@app.get("/")
+async def root():
+    """Root endpoint with system information."""
+    return {
+        "service": "Multi-Domain Document QA API",
+        "version": "4.0.0",
+        "description": "AI-powered system for analyzing any document type with specialized insurance capabilities and intelligent query classification.",
+        "features": [
+            "🔧 FIXED: Document Isolation - Each document gets its own vector store",
+            "Multi-domain support (Physics, Legal, Insurance, Academic, Medical, General)",
+            "Intelligent query type classification",
+            "Domain-adaptive processing",
+            "Bearer token authentication",
+            "Parallel question processing",
+            "Enhanced clause mapping for insurance",
+            "Structured responses with confidence scoring"
+        ],
+        "endpoints": {
+            "upload": "/api/v1/upload-and-query",
+            "url_process": "/api/v1/process-url", 
+            "query": "/api/v1/query",
+            "cache_status": "/api/v1/cache-status",
+            "clear_cache": "/api/v1/clear-cache",
+            "health": "/api/v1/health"
+        },
+        "authentication": "Bearer token required (set BEARER_TOKEN environment variable)",
+        "timestamp": datetime.now().isoformat()
+    }
 
 # Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
-    """Custom HTTP exception handler with detailed error logging"""
-    error_id = str(uuid.uuid4())[:8]
-    logger.error(f"[{error_id}] HTTP {exc.status_code}: {exc.detail} - Path: {request.url.path}")
-    
+    """Custom HTTP exception handler."""
+    logger.error(f"HTTP {exc.status_code}: {exc.detail}")
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": exc.detail,
             "status_code": exc.status_code,
-            "error_id": error_id,
-            "timestamp": datetime.now().isoformat(),
-            "path": str(request.url.path)
+            "timestamp": datetime.now().isoformat()
         }
     )
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
-    """Handle unexpected exceptions with proper logging"""
-    error_id = str(uuid.uuid4())[:8]
-    logger.error(f"[{error_id}] Unhandled exception: {str(exc)} - Path: {request.url.path}")
-    
+    """General exception handler."""
+    logger.error(f"Unhandled exception: {str(exc)}")
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
-            "error_id": error_id,
-            "timestamp": datetime.now().isoformat(),
-            "path": str(request.url.path)
+            "detail": str(exc),
+            "timestamp": datetime.now().isoformat()
         }
     )
-
-# Startup event to log system initialization
-@app.on_event("startup")
-async def startup_event():
-    """Log system startup information"""
-    logger.info("=" * 60)
-    logger.info("🎉 Multi-Domain Document QA System v4.0.0 Started Successfully!")
-    logger.info("=" * 60)
-    logger.info(f"✅ Supported domains: {list(DOMAIN_CONFIG.keys())}")
-    logger.info(f"✅ Insurance components: {len(COMPONENT_KEYWORDS)} types")
-    logger.info(f"✅ Domain detection keywords: {sum(len(keywords) for keywords in DOMAIN_DETECTION_KEYWORDS.values())}")
-    logger.info(f"✅ Classification system: Fixed domain override issue")
-    logger.info(f"✅ Bearer token: {'Configured' if EXPECTED_BEARER_TOKEN != 'your-default-token-here' else 'Default (update required)'}")
-    logger.info("=" * 60)
 
 if __name__ == "__main__":
     import uvicorn
     
-    # Get port from environment variable or default to 8000
+    # Get port from environment or use default
     port = int(os.getenv("PORT", 8000))
-    host = os.getenv("HOST", "0.0.0.0")
     
-    logger.info(f"🚀 Starting Multi-Domain Document QA System on {host}:{port}")
+    logger.info(f"🚀 Starting Multi-Domain Document QA API on port {port}")
+    logger.info("🔧 KEY FEATURES:")
+    logger.info("   ✅ FIXED: Proper document isolation with unique vector stores")
+    logger.info("   ✅ Enhanced domain detection and adaptive processing")
+    logger.info("   ✅ Advanced query classification preventing cross-contamination")
+    logger.info("   ✅ Bearer token authentication for security")
+    logger.info("   ✅ Comprehensive error handling and logging")
     
     uvicorn.run(
         "main:app",
-        host=host,
+        host="0.0.0.0",
         port=port,
-        log_level="info",
+        reload=False,  # Set to False for production
         access_log=True,
-        reload=False  # Set to False for production
+        log_level="info"
     )
+
