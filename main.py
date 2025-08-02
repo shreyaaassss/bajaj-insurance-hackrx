@@ -214,11 +214,11 @@ class URLDownloader:
             # Normalize and convert URL for different services
             download_url, filename = self._prepare_url_and_filename(url)
             
-            # Create HTTP client with appropriate configuration
+            # FIXED: Create HTTP client with correct configuration
             client_config = httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
                 follow_redirects=True,
-                limits=httpx.Limits(max_redirects=10),
+                # REMOVED: limits=httpx.Limits(max_redirects=10) - max_redirects is not a valid parameter
                 headers={
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
                 }
