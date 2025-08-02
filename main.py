@@ -2527,14 +2527,13 @@ async def general_exception_handler(request: Request, exc: Exception):
 if __name__ == "__main__":
     import uvicorn
     
-    logger.info("🚀 Starting Production-Ready Enhanced Universal Document Processing API v5.0")
-    logger.info("🎯 Features: Pinecone + Redis + Optimized Embeddings + Memory Mapping + Batch Processing")
-    
+    # Production configuration
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
-        workers=1,  # Single worker for session management
+        port=int(os.getenv("PORT", 8000)),
+        workers=1,  # Single worker for shared memory optimization
+        log_level="info",
         access_log=True,
-        log_level="info"
+        loop="asyncio"
     )
