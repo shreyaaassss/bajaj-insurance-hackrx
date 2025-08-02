@@ -912,11 +912,15 @@ class EnhancedRAGSystem:
             if results and not isinstance(results[0], Exception):
                 vector_results = results[0]
                 for doc, distance_score in vector_results:
-                    all_docs.append(doc)
-                    # Better score normalization for ChromaDB
-                    similarity_score = max(0.0, min(1.0, (2.0 - distance_score) / 2.0))
-                    all_scores.append(similarity_score)
-
+                    if doc is not None:  # FIXED: NULL-safe check
+                        all_docs.append(doc)
+                        # FIXED: Handle None distance_score
+                        if distance_score is not None:
+                            similarity_score = max(0.0, min(1.0, (2.0 - float(distance_score)) / 2.0))
+                        else:
+                            similarity_score = 0.5  # Default fallback
+                        all_scores.append(similarity_score)
+                        
             # Process BM25 results
             if len(results) > 1 and not isinstance(results[1], Exception):
                 bm25_docs = results[1][:top_k]
@@ -992,39 +996,43 @@ class UniversalDecisionEngine:
             "processing": "Processed with {processing_method} approach"
         }
 
-    def calculate_confidence_score(self,
-                                 query: str,
-                                 similarity_scores: List[float],
-                                 query_match_quality: float,
-                                 domain_confidence: float = 1.0) -> float:
-        """FIXED: Enhanced confidence calculation with domain awareness"""
+    def calculate_confidence_score(self,query: str,similarity_scores: List[float],query_match_quality: float,domain_confidence: float = 1.0) -> float:
+        """FIXED: Enhanced confidence calculation with NULL-safe domain awareness"""
         
-        cache_key = f"{hash(tuple(similarity_scores))}_{query_match_quality}_{domain_confidence}"
+        # FIXED: Handle None values safely
+        similarity_scores = similarity_scores or []
+        query_match_quality = query_match_quality if query_match_quality is not None else 0.5
+        domain_confidence = domain_confidence if domain_confidence is not None else 1.0
+        
+        # Filter out None values from similarity scores
+        clean_scores = [score for score in similarity_scores if score is not None and isinstance(score, (int, float))]
+        
+        cache_key = f"{hash(tuple(clean_scores))}_{query_match_quality}_{domain_confidence}"
         if cache_key in UniversalDecisionEngine.confidence_cache:
             return UniversalDecisionEngine.confidence_cache[cache_key]
 
-        if not similarity_scores:
+        if not clean_scores:
             confidence = 0.15  # Increased minimum from 0.1
         else:
-            scores_array = np.array(similarity_scores)
-            avg_similarity = np.mean(scores_array)
-            max_similarity = np.max(scores_array)
+            scores_array = np.array(clean_scores)
+            avg_similarity = float(np.mean(scores_array))
+            max_similarity = float(np.max(scores_array))
 
             # Better score consistency calculation
-            score_variance = np.var(scores_array) if len(scores_array) > 1 else 0.0
+            score_variance = float(np.var(scores_array)) if len(scores_array) > 1 else 0.0
             score_consistency = max(0.0, 1.0 - (score_variance * 2))  # Penalize high variance
 
-            # FIXED: Improved confidence calculation
+            # FIXED: NULL-safe confidence calculation
             base_confidence = (
                 0.40 * max_similarity +      # Highest weight to best match
                 0.25 * avg_similarity +      # Average quality
-                0.20 * min(1.0, query_match_quality) +  # Query relevance
+                0.20 * min(1.0, float(query_match_quality)) +  # Query relevance (NULL-safe)
                 0.15 * score_consistency     # Consistency bonus
             )
 
             # FIXED: Only apply domain boost for actual domain-relevant queries
             if domain_confidence > 0.7:
-                query_lower = query.lower()
+                query_lower = query.lower() if query else ""
                 if any(term in query_lower for term in ['policy', 'premium', 'claim', 'coverage', 'waiting period']):
                     base_confidence *= 1.15  # 15% boost for insurance queries
                 elif any(term in query_lower for term in ['hamlet', 'shakespeare', 'prince', 'denmark', 'claudius']):
@@ -1034,6 +1042,7 @@ class UniversalDecisionEngine:
 
         UniversalDecisionEngine.confidence_cache[cache_key] = confidence
         return confidence
+
 
     def generate_reasoning_chain(self,
                                query: str,
