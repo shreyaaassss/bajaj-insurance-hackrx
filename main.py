@@ -69,7 +69,21 @@ logging.basicConfig(
 
 logger = logging.getLogger(__name__)
 
-# Global variables
+# ================================
+# GLOBAL VARIABLES & CONFIGURATION
+# ================================
+
+# Component ready states
+components_ready = {
+    "base_sentence_model": False,
+    "embedding_model": False,
+    "reranker": False,
+    "openai_client": False,
+    "pinecone": False,
+    "redis": False
+}
+
+# Global variables with proper initialization
 embedding_model = None
 query_embedding_model = None
 base_sentence_model = None
@@ -80,164 +94,221 @@ pinecone_index = None
 
 # Configuration
 SESSION_TTL = int(os.getenv("SESSION_TTL", 3600))  # 1 hour
-PERSISTENT_CHROMA_DIR = os.getenv("PERSISTENT_CHROMA_DIR", "/tmp/persistent_chroma")
 MAX_CACHE_SIZE = int(os.getenv("MAX_CACHE_SIZE", 1000))
 EMBEDDING_CACHE_SIZE = int(os.getenv("EMBEDDING_CACHE_SIZE", 10000))
 LOG_VERBOSE = os.getenv("LOG_VERBOSE", "true").lower() == "true"
 
-# HARDCODED PINECONE API KEY
-PINECONE_API_KEY = "pcsk_5SJNxg_B3sWxTJSuUBgYi6GDEuyHgNyt337K2Mts2SFY3udWPLdd2MiyETruf7iyV6SRhe"
-PINECONE_ENVIRONMENT = "gcp-starter"
-PINECONE_INDEX_NAME = "enhanced-rag-system"
+# Environment variables for API keys
+PINECONE_API_KEY = os.getenv("PINECONE_API_KEY", "")
+PINECONE_ENVIRONMENT = os.getenv("PINECONE_ENVIRONMENT", "gcp-starter")
+PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME", "enhanced-rag-system")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+
+# Authentication token
+HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
 
 # Enhanced caching system
 ACTIVE_SESSIONS = {}
 EMBEDDING_CACHE = LRUCache(maxsize=EMBEDDING_CACHE_SIZE)
-RESPONSE_CACHE = TTLCache(maxsize=MAX_CACHE_SIZE, ttl=300)  # 5-minute cache
+RESPONSE_CACHE = TTLCache(maxsize=MAX_CACHE_SIZE, ttl=300)
 
-# ENHANCED DOMAIN-ADAPTIVE CONFIGURATIONS - CONFIDENCE THRESHOLDS REMOVED
-DEFAULT_DOMAIN_CONFIG = {
-    "chunk_size": 1000,
-    "chunk_overlap": 150,
-    "semantic_search_k": 15,
-    "context_docs": 12,
+# UNIVERSAL DOMAIN CONFIGURATION - Works for ALL document types
+UNIVERSAL_CONFIG = {
+    "chunk_size": 1200,
+    "chunk_overlap": 200,
+    "semantic_search_k": 25,
+    "context_docs": 18,
+    "confidence_threshold": 0.45,  # Lower for universal coverage
     "use_mmr": True,
-    "mmr_lambda": 0.7,
+    "mmr_lambda": 0.75,
     "use_metadata_filtering": True,
-    "rerank_top_k": 25
+    "rerank_top_k": 35
 }
 
+# Domain-specific optimizations (inherits from UNIVERSAL_CONFIG)
 DOMAIN_CONFIGS = {
-    "technical": {
-        "chunk_size": 1200, "chunk_overlap": 200, "semantic_search_k": 20,
-        "context_docs": 15, "use_mmr": True,
-        "mmr_lambda": 0.6, "use_metadata_filtering": True, "rerank_top_k": 30
-    },
-    "legal": {
-        "chunk_size": 1500, "chunk_overlap": 300, "semantic_search_k": 25,
-        "context_docs": 20, "use_mmr": True,
-        "mmr_lambda": 0.8, "use_metadata_filtering": True, "rerank_top_k": 35
-    },
-    "medical": {
-        "chunk_size": 1100, "chunk_overlap": 220, "semantic_search_k": 18,
-        "context_docs": 15, "use_mmr": True,
-        "mmr_lambda": 0.7, "use_metadata_filtering": True, "rerank_top_k": 28
-    },
-    "financial": {
-        "chunk_size": 1000, "chunk_overlap": 200, "semantic_search_k": 15,
-        "context_docs": 12, "use_mmr": True,
-        "mmr_lambda": 0.7, "use_metadata_filtering": True, "rerank_top_k": 25
-    },
-    "insurance": {
-        "chunk_size": 1200, "chunk_overlap": 200, "semantic_search_k": 22,
-        "context_docs": 18, "use_mmr": True,
-        "mmr_lambda": 0.75, "use_metadata_filtering": True, "rerank_top_k": 32
-    },
-    "academic": {
-        "chunk_size": 1300, "chunk_overlap": 250, "semantic_search_k": 20,
-        "context_docs": 15, "use_mmr": True,
-        "mmr_lambda": 0.6, "use_metadata_filtering": True, "rerank_top_k": 30
-    },
-    "business": {
-        "chunk_size": 1100, "chunk_overlap": 200, "semantic_search_k": 18,
-        "context_docs": 14, "use_mmr": True,
-        "mmr_lambda": 0.7, "use_metadata_filtering": True, "rerank_top_k": 28
-    },
-    "general": DEFAULT_DOMAIN_CONFIG
+    "insurance": {**UNIVERSAL_CONFIG, "confidence_threshold": 0.40, "semantic_search_k": 30},
+    "legal": {**UNIVERSAL_CONFIG, "chunk_size": 1500, "chunk_overlap": 300, "semantic_search_k": 28},
+    "medical": {**UNIVERSAL_CONFIG, "confidence_threshold": 0.50, "semantic_search_k": 22},
+    "financial": {**UNIVERSAL_CONFIG, "confidence_threshold": 0.48, "semantic_search_k": 20},
+    "technical": {**UNIVERSAL_CONFIG, "confidence_threshold": 0.52, "semantic_search_k": 24},
+    "academic": {**UNIVERSAL_CONFIG, "chunk_size": 1300, "chunk_overlap": 250},
+    "business": {**UNIVERSAL_CONFIG, "confidence_threshold": 0.47},
+    "general": UNIVERSAL_CONFIG,
+    "default": UNIVERSAL_CONFIG  # Fallback for any domain
 }
 
-# Enhanced keywords for better domain detection
-INSURANCE_KEYWORDS = [
-    'policy', 'premium', 'claim', 'coverage', 'benefit', 'exclusion', 'waiting period',
-    'pre-existing condition', 'maternity', 'critical illness', 'hospitalization',
-    'cashless', 'network provider', 'sum insured', 'policyholder', 'deductible',
-    'co-payment', 'room rent', 'sub-limit', 'renewal', 'grace period', 'nominee',
-    'cataract', 'PED', 'clause'
-]
-
-LEGAL_KEYWORDS = [
-    'clause', 'section', 'article', 'provision', 'terms', 'conditions', 'agreement',
-    'contract', 'liability', 'jurisdiction', 'compliance', 'regulation', 'statute'
-]
+# Universal keywords for comprehensive domain detection
+DOMAIN_KEYWORDS = {
+    "insurance": ['policy', 'premium', 'claim', 'coverage', 'benefit', 'exclusion', 'waiting period',
+                  'pre-existing condition', 'maternity', 'critical illness', 'hospitalization', 'cashless',
+                  'network provider', 'sum insured', 'policyholder', 'deductible', 'co-payment', 'room rent',
+                  'sub-limit', 'renewal', 'grace period', 'nominee', 'cataract', 'PED', 'NCD', 'AYUSH'],
+    "legal": ['clause', 'section', 'article', 'provision', 'terms', 'conditions', 'agreement', 'contract',
+              'liability', 'jurisdiction', 'compliance', 'regulation', 'statute', 'law', 'legal'],
+    "medical": ['medical', 'healthcare', 'patient', 'diagnosis', 'treatment', 'clinical', 'therapy',
+                'medicine', 'hospital', 'physician', 'doctor', 'surgery', 'pharmaceutical', 'health'],
+    "financial": ['financial', 'banking', 'investment', 'economics', 'business', 'finance', 'accounting',
+                  'audit', 'tax', 'revenue', 'profit', 'loss', 'balance sheet', 'portfolio', 'market'],
+    "technical": ['technical', 'engineering', 'software', 'development', 'programming', 'code',
+                  'architecture', 'system', 'design', 'specifications', 'API', 'database', 'network'],
+    "academic": ['academic', 'research', 'study', 'analysis', 'methodology', 'scholarly', 'scientific',
+                 'paper', 'thesis', 'journal', 'publication', 'university', 'education', 'curriculum'],
+    "business": ['business', 'corporate', 'strategy', 'management', 'operations', 'marketing', 'sales',
+                 'human resources', 'organizational', 'project management', 'leadership', 'productivity']
+}
 
 # ================================
-# ENHANCED INTELLIGENT TEXT SPLITTER
+# AUTHENTICATION MIDDLEWARE (FIXED)
 # ================================
 
-class IntelligentTextSplitter:
-    """Enhanced text splitter with section-aware and semantic chunking"""
+security = HTTPBearer(auto_error=False)
+
+async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(security)):
+    """FIXED: Verify Bearer token authentication"""
+    if not credentials or credentials.credentials != HACKRX_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authentication token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
+
+# ================================
+# COMPONENT READINESS CHECKER (NEW)
+# ================================
+
+async def ensure_components_ready(timeout: float = 60.0):
+    """FIXED: Ensure all components are loaded before processing"""
+    start_time = time.time()
     
-    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 200, domain: str = "general"):
+    while time.time() - start_time < timeout:
+        # Check critical components
+        critical_ready = (
+            openai_client is not None and
+            components_ready.get("openai_client", False)
+        )
+        
+        # Optional components (can work without them)
+        optional_ready = (
+            base_sentence_model is not None or
+            components_ready.get("base_sentence_model", False)
+        )
+        
+        if critical_ready:
+            logger.info(f"✅ Critical components ready. Optional components: {optional_ready}")
+            return True
+            
+        await asyncio.sleep(0.5)
+    
+    # If we reach here, not all components are ready
+    if openai_client is None:
+        raise HTTPException(
+            status_code=503, 
+            detail="System not ready: OpenAI client not initialized"
+        )
+    
+    logger.warning("⚠️ Some optional components not ready, continuing with available components")
+    return True
+
+# ================================
+# INTELLIGENT TEXT SPLITTER (FIXED)
+# ================================
+
+class UniversalTextSplitter:
+    """FIXED: Universal text splitter that works for ALL document types"""
+
+    def __init__(self, chunk_size: int = 1200, chunk_overlap: int = 200, domain: str = "general"):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.domain = domain
         
-        # Enhanced separators based on document structure
+        # Universal separators for all document types
         self.separators = [
-            "\n\n### ",  # Section headers
-            "\n\n## ",   # Sub-section headers
-            "\n\n# ",    # Main headers
+            "\n\n### ",    # Section headers
+            "\n\n## ",     # Sub-section headers
+            "\n\n# ",      # Main headers
+            "\n\nChapter ", # Chapters
+            "\n\nSection ", # Sections
+            "\n\nArticle ", # Articles
             "\n\nClause ",  # Legal clauses
-            "\n\nSection ",  # Sections
-            "\n\nArticle ",  # Articles
-            "\n\n",       # Double newlines
-            "\n",         # Single newlines
-            ". ",         # Sentences
-            " ",          # Words
-            ""            # Characters
+            "\n\nPart ",    # Parts
+            "\n\n",         # Double newlines
+            "\n",           # Single newlines
+            ". ",           # Sentences
+            "! ",           # Exclamations
+            "? ",           # Questions
+            " ",            # Words
+            ""              # Characters
         ]
         
-        # Section markers for metadata extraction
+        # Universal section patterns
         self.section_patterns = [
-            r'(?i)^(clause|section|article|chapter|part)\s+(\d+(?:\.\d+)*)',
-            r'(?i)^(\d+(?:\.\d+)*)\s+(clause|section|article)',
-            r'(?i)^([A-Z][^.]*:)$',  # Headings ending with colon
-            r'(?i)^([IVX]+\.)\s+',   # Roman numerals
-            r'(?i)^(\([a-z]\))\s+',  # (a) style numbering
+            r'(?i)^(chapter|section|article|clause|part|appendix|annex)\s+(\d+(?:\.\d+)*)',
+            r'(?i)^(\d+(?:\.\d+)*)\s*(chapter|section|article|clause|part)',
+            r'(?i)^([A-Z][^.:!?]*[.:])\s*$',  # Headings ending with period or colon
+            r'(?i)^([IVX]+\.)\s+',             # Roman numerals
+            r'(?i)^(\([a-zA-Z0-9]\))\s+',      # (a) or (1) style numbering
+            r'(?i)^(\d+\.\d+)\s+',             # Numbered sections like 1.1
+            r'(?i)^([A-Z\s]{3,})\s*$'          # All caps titles
         ]
-    
+
     def split_documents(self, documents: List[Document]) -> List[Document]:
-        """Split documents with enhanced section awareness"""
+        """FIXED: Split documents with enhanced section awareness"""
         all_chunks = []
         for doc in documents:
-            chunks = self._split_single_document(doc)
-            all_chunks.extend(chunks)
+            try:
+                chunks = self._split_single_document(doc)
+                all_chunks.extend(chunks)
+            except Exception as e:
+                logger.warning(f"⚠️ Error splitting document: {e}")
+                # Fallback to basic recursive splitting
+                chunks = self._fallback_split(doc)
+                all_chunks.extend(chunks)
+        
+        # Filter out very short chunks
+        all_chunks = [chunk for chunk in all_chunks if len(chunk.page_content.strip()) >= 50]
+        
+        logger.info(f"📄 Split into {len(all_chunks)} chunks")
         return all_chunks
-    
+
     def _split_single_document(self, document: Document) -> List[Document]:
-        """Split single document with section-aware chunking"""
+        """FIXED: Split single document with section-aware chunking"""
         text = document.page_content
         
-        # First, try to identify sections
+        # Try to identify sections first
         sections = self._identify_sections(text)
         
         if len(sections) > 1:
-            # Process section by section
             chunks = []
             for section in sections:
                 section_chunks = self._chunk_section(section, document.metadata)
                 chunks.extend(section_chunks)
             return chunks
         else:
-            # Fallback to enhanced recursive splitting
+            # Use enhanced recursive splitting
             return self._enhanced_recursive_split(document)
-    
+
     def _identify_sections(self, text: str) -> List[Dict[str, Any]]:
-        """Identify document sections using patterns"""
+        """FIXED: Identify document sections using universal patterns"""
         sections = []
         lines = text.split('\n')
         current_section = {"header": "", "content": "", "start_line": 0}
         
         for i, line in enumerate(lines):
-            is_header = self._is_section_header(line.strip())
+            line = line.strip()
+            if not line:
+                continue
+                
+            is_header = self._is_section_header(line)
             
             if is_header and current_section["content"].strip():
                 # Save previous section
                 sections.append(current_section)
-                current_section = {"header": line.strip(), "content": "", "start_line": i}
+                current_section = {"header": line, "content": "", "start_line": i}
             elif is_header and not current_section["content"].strip():
                 # Update header if no content yet
-                current_section["header"] = line.strip()
+                current_section["header"] = line
                 current_section["start_line"] = i
             else:
                 current_section["content"] += line + "\n"
@@ -246,33 +317,35 @@ class IntelligentTextSplitter:
         if current_section["content"].strip():
             sections.append(current_section)
         
-        # If no sections found, return the entire text as one section
-        if not sections:
-            sections = [{"header": "Document", "content": text, "start_line": 0}]
+        # If no clear sections found, return entire text
+        if not sections or len(sections) == 1:
+            return [{"header": "Document", "content": text, "start_line": 0}]
         
         return sections
-    
+
     def _is_section_header(self, line: str) -> bool:
-        """Check if a line is likely a section header"""
-        if not line.strip():
+        """FIXED: Universal section header detection"""
+        if not line.strip() or len(line) > 200:  # Too long to be header
             return False
         
+        # Check patterns
         for pattern in self.section_patterns:
             if re.match(pattern, line):
                 return True
         
-        # Additional heuristics
+        # Additional universal heuristics
+        line_upper = line.upper()
         if (len(line) < 100 and
-            (line.isupper() or
-             line.endswith(':') or
-             re.match(r'^\d+\.', line) or
-             re.match(r'^[A-Z][^.]*$', line))):
+            (line == line_upper or  # All caps
+             line.endswith((':', '.')) or  # Ends with colon or period
+             re.match(r'^\d+[\.\)]\s+', line) or  # Starts with number
+             re.match(r'^[A-Z][a-z]*[\s\w]*$', line))):  # Title case
             return True
         
         return False
-    
+
     def _chunk_section(self, section: Dict[str, Any], base_metadata: Dict) -> List[Document]:
-        """Chunk a single section while preserving context"""
+        """FIXED: Chunk a single section preserving context"""
         header = section["header"]
         content = section["content"]
         
@@ -290,8 +363,7 @@ class IntelligentTextSplitter:
                 metadata=enhanced_metadata
             )]
         
-        # Split large section into chunks
-        chunks = []
+        # Split large section
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
@@ -299,6 +371,7 @@ class IntelligentTextSplitter:
         )
         
         section_chunks = splitter.split_text(content)
+        chunks = []
         
         for i, chunk_text in enumerate(section_chunks):
             enhanced_metadata = base_metadata.copy()
@@ -310,7 +383,7 @@ class IntelligentTextSplitter:
                 "total_chunks_in_section": len(section_chunks)
             })
             
-            # Add section header to first chunk
+            # Add header to first chunk
             if i == 0 and header:
                 chunk_content = f"{header}\n\n{chunk_text}"
             else:
@@ -322,26 +395,37 @@ class IntelligentTextSplitter:
             ))
         
         return chunks
-    
+
     def _classify_section_type(self, header: str) -> str:
-        """Classify the type of section based on header"""
+        """FIXED: Universal section type classification"""
         header_lower = header.lower()
         
-        if any(word in header_lower for word in ['clause', 'section', 'article']):
-            return "clause"
-        elif any(word in header_lower for word in ['exclusion', 'exception']):
-            return "exclusion"
-        elif any(word in header_lower for word in ['coverage', 'benefit']):
-            return "coverage"
-        elif any(word in header_lower for word in ['definition', 'meaning']):
+        # Universal classification
+        if any(word in header_lower for word in ['summary', 'abstract', 'overview']):
+            return "summary"
+        elif any(word in header_lower for word in ['introduction', 'background', 'preface']):
+            return "introduction"
+        elif any(word in header_lower for word in ['conclusion', 'summary', 'findings']):
+            return "conclusion"
+        elif any(word in header_lower for word in ['method', 'procedure', 'process', 'approach']):
+            return "methodology"
+        elif any(word in header_lower for word in ['result', 'outcome', 'finding']):
+            return "results"
+        elif any(word in header_lower for word in ['discussion', 'analysis', 'interpretation']):
+            return "discussion"
+        elif any(word in header_lower for word in ['reference', 'bibliography', 'citation']):
+            return "references"
+        elif any(word in header_lower for word in ['appendix', 'annex', 'supplement']):
+            return "appendix"
+        elif any(word in header_lower for word in ['definition', 'glossary', 'terminology']):
             return "definition"
-        elif any(word in header_lower for word in ['procedure', 'process', 'how to']):
-            return "procedure"
+        elif any(word in header_lower for word in ['table', 'figure', 'chart', 'diagram']):
+            return "visual"
         else:
-            return "general"
-    
+            return "content"
+
     def _enhanced_recursive_split(self, document: Document) -> List[Document]:
-        """Enhanced recursive splitting as fallback"""
+        """FIXED: Enhanced recursive splitting as fallback"""
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=self.chunk_size,
             chunk_overlap=self.chunk_overlap,
@@ -350,648 +434,708 @@ class IntelligentTextSplitter:
         
         chunks = splitter.split_documents([document])
         
-        # Enhance metadata for each chunk
+        # Enhance metadata
         for i, chunk in enumerate(chunks):
             chunk.metadata.update({
                 "chunk_index": i,
                 "total_chunks": len(chunks),
                 "chunk_type": "recursive_split",
-                "section_type": "unknown"
+                "section_type": "general"
             })
         
         return chunks
 
+    def _fallback_split(self, document: Document) -> List[Document]:
+        """FIXED: Simple fallback splitting"""
+        try:
+            splitter = RecursiveCharacterTextSplitter(
+                chunk_size=self.chunk_size,
+                chunk_overlap=self.chunk_overlap
+            )
+            return splitter.split_documents([document])
+        except Exception as e:
+            logger.error(f"❌ Even fallback splitting failed: {e}")
+            # Return document as single chunk
+            return [document]
+
 # ================================
-# REDIS CACHE IMPLEMENTATION
+# REDIS CACHE IMPLEMENTATION (FIXED)
 # ================================
 
 class RedisCache:
-    """Production-ready Redis cache for response caching"""
+    """FIXED: Production-ready Redis cache with proper error handling"""
     
     def __init__(self):
         self.redis = None
+        self.fallback_cache = TTLCache(maxsize=1000, ttl=300)
     
     async def initialize(self):
-        """Initialize Redis connection with connection pooling"""
+        """FIXED: Initialize Redis with proper error handling"""
         try:
             self.redis = redis.Redis(
-                host="localhost",
-                port=6379,
+                host=os.getenv("REDIS_HOST", "localhost"),
+                port=int(os.getenv("REDIS_PORT", 6379)),
                 db=0,
-                connection_pool_class_kwargs={"max_connections": 20},
+                socket_connect_timeout=5,
+                socket_timeout=5,
                 decode_responses=True
             )
             
             # Test connection
-            await self.redis.ping()
+            await asyncio.wait_for(self.redis.ping(), timeout=5)
+            components_ready["redis"] = True
             logger.info("✅ Redis cache initialized successfully")
+            
         except Exception as e:
-            logger.warning(f"⚠️ Redis not available, falling back to memory cache: {e}")
+            logger.warning(f"⚠️ Redis not available, using fallback cache: {e}")
             self.redis = None
+            components_ready["redis"] = False
     
     async def get_cached_response(self, query_hash: str) -> Optional[Dict]:
-        """Get cached response from Redis"""
-        if not self.redis:
-            return None
-        try:
-            cached = await self.redis.get(f"response:{query_hash}")
-            return json.loads(cached) if cached else None
-        except Exception as e:
-            logger.warning(f"⚠️ Redis get error: {e}")
-            return None
+        """FIXED: Get cached response with fallback"""
+        if self.redis:
+            try:
+                cached = await asyncio.wait_for(
+                    self.redis.get(f"response:{query_hash}"), 
+                    timeout=2
+                )
+                return json.loads(cached) if cached else None
+            except Exception as e:
+                logger.warning(f"⚠️ Redis get error: {e}")
+        
+        # Fallback to memory cache
+        return self.fallback_cache.get(query_hash)
     
     async def cache_response(self, query_hash: str, response: dict, ttl: int = 300):
-        """Cache response in Redis"""
-        if not self.redis:
-            return
-        try:
-            await self.redis.setex(f"response:{query_hash}", ttl, json.dumps(response, default=str))
-        except Exception as e:
-            logger.warning(f"⚠️ Redis cache error: {e}")
-    
-    async def clear_cache(self):
-        """Clear all cached responses"""
-        if not self.redis:
-            return
-        try:
-            await self.redis.flushdb()
-            logger.info("🗑️ Redis cache cleared")
-        except Exception as e:
-            logger.warning(f"⚠️ Redis clear error: {e}")
+        """FIXED: Cache response with fallback"""
+        # Always cache in memory
+        self.fallback_cache[query_hash] = response
+        
+        if self.redis:
+            try:
+                await asyncio.wait_for(
+                    self.redis.setex(f"response:{query_hash}", ttl, json.dumps(response, default=str)),
+                    timeout=2
+                )
+            except Exception as e:
+                logger.warning(f"⚠️ Redis cache error: {e}")
 
 # ================================
-# OPTIMIZED EMBEDDING SERVICE
+# OPTIMIZED EMBEDDING SERVICE (FIXED)
 # ================================
 
 class OptimizedEmbeddingService:
-    """Optimized embedding service with batch processing and caching"""
+    """FIXED: Optimized embedding service with proper async handling"""
     
     def __init__(self):
-        self.embedding_cache = {}
+        self.embedding_cache = LRUCache(maxsize=5000)
         self.batch_queue = []
-        self.processing_batch = False
+        self.processing_lock = asyncio.Lock()
     
     async def get_embeddings_batch(self, texts: List[str]) -> List[np.ndarray]:
-        """Process embeddings in optimized batches"""
-        # Check cache first
-        cached_embeddings = []
-        uncached_texts = []
-        uncached_indices = []
+        """FIXED: Process embeddings in optimized batches with fallback"""
+        if not texts:
+            return []
         
-        for i, text in enumerate(texts):
-            text_hash = hashlib.md5(text.encode()).hexdigest()
-            if text_hash in self.embedding_cache:
-                cached_embeddings.append((i, self.embedding_cache[text_hash]))
-            else:
-                uncached_texts.append(text)
-                uncached_indices.append(i)
-        
-        # Batch process only uncached
-        new_embeddings = []
-        if uncached_texts and base_sentence_model:
-            new_embeddings = await asyncio.to_thread(
-                base_sentence_model.encode,
-                uncached_texts,
-                batch_size=128,
-                show_progress_bar=False,
-                convert_to_numpy=True
-            )
-        
-        # Cache new embeddings
-        for text, embedding in zip(uncached_texts, new_embeddings):
-            text_hash = hashlib.md5(text.encode()).hexdigest()
-            self.embedding_cache[text_hash] = embedding
-        
-        # Reconstruct full embedding list in original order
-        result_embeddings = [None] * len(texts)
-        
-        # Place cached embeddings
-        for i, embedding in cached_embeddings:
-            result_embeddings[i] = embedding
-        
-        # Place new embeddings
-        for i, embedding in zip(uncached_indices, new_embeddings):
-            result_embeddings[i] = embedding
-        
-        return result_embeddings
+        async with self.processing_lock:
+            # Check cache first
+            results = []
+            uncached_texts = []
+            uncached_indices = []
+            
+            for i, text in enumerate(texts):
+                text_hash = hashlib.md5(text.encode()).hexdigest()
+                if text_hash in self.embedding_cache:
+                    results.append((i, self.embedding_cache[text_hash]))
+                else:
+                    uncached_texts.append(text)
+                    uncached_indices.append(i)
+            
+            # Process uncached texts
+            if uncached_texts:
+                try:
+                    if base_sentence_model:
+                        # Use sentence transformer
+                        embeddings = await asyncio.to_thread(
+                            base_sentence_model.encode,
+                            uncached_texts,
+                            batch_size=min(64, len(uncached_texts)),
+                            show_progress_bar=False,
+                            convert_to_numpy=True
+                        )
+                        
+                        # Cache new embeddings
+                        for text, embedding in zip(uncached_texts, embeddings):
+                            text_hash = hashlib.md5(text.encode()).hexdigest()
+                            self.embedding_cache[text_hash] = embedding
+                        
+                        # Add to results
+                        for i, embedding in zip(uncached_indices, embeddings):
+                            results.append((i, embedding))
+                    
+                    else:
+                        # Fallback: return zero vectors
+                        logger.warning("⚠️ No embedding model available, using zero vectors")
+                        for i in uncached_indices:
+                            results.append((i, np.zeros(384)))
+                
+                except Exception as e:
+                    logger.error(f"❌ Embedding error: {e}")
+                    # Return zero vectors as fallback
+                    for i in uncached_indices:
+                        results.append((i, np.zeros(384)))
+            
+            # Sort results by original index
+            results.sort(key=lambda x: x[0])
+            return [embedding for _, embedding in results]
     
     async def get_query_embedding(self, query: str) -> np.ndarray:
-        """Get single query embedding with caching"""
-        if not base_sentence_model:
-            return np.zeros(384)  # Return zero vector if model not loaded
+        """FIXED: Get single query embedding with proper error handling"""
+        if not query.strip():
+            return np.zeros(384)
         
         query_hash = hashlib.md5(query.encode()).hexdigest()
         
         if query_hash in self.embedding_cache:
             return self.embedding_cache[query_hash]
         
-        embedding = await asyncio.to_thread(
-            base_sentence_model.encode,
-            query,
-            convert_to_numpy=True
-        )
+        try:
+            if base_sentence_model:
+                embedding = await asyncio.to_thread(
+                    base_sentence_model.encode,
+                    query,
+                    convert_to_numpy=True
+                )
+                self.embedding_cache[query_hash] = embedding
+                return embedding
+            else:
+                logger.warning("⚠️ No embedding model available for query")
+                return np.zeros(384)
         
-        self.embedding_cache[query_hash] = embedding
-        return embedding
+        except Exception as e:
+            logger.error(f"❌ Query embedding error: {e}")
+            return np.zeros(384)
 
 # ================================
-# OPTIMIZED OPENAI CLIENT
+# OPTIMIZED OPENAI CLIENT (FIXED)
 # ================================
 
 class OptimizedOpenAIClient:
-    """OpenAI client with advanced caching and connection pooling"""
+    """FIXED: OpenAI client with proper connection pooling and error handling"""
     
     def __init__(self):
         self.client = None
-        self.prompt_cache = TTLCache(maxsize=1000, ttl=600)  # 10-minute cache
+        self.prompt_cache = TTLCache(maxsize=1000, ttl=600)
         self.rate_limit_delay = 1.0
-        self.connection_pool = None
+        self.request_semaphore = asyncio.Semaphore(10)  # Limit concurrent requests
     
     async def initialize(self, api_key: str):
-        """Initialize the OpenAI client with connection pooling"""
+        """FIXED: Initialize OpenAI client with proper timeout and pooling"""
+        if not api_key:
+            raise ValueError("OpenAI API key is required")
+        
         try:
-            # Connection pooling for better performance
+            # Create client with connection pooling
             self.client = AsyncOpenAI(
                 api_key=api_key,
-                http_client=httpx.AsyncClient(
-                    limits=httpx.Limits(max_connections=20, max_keepalive_connections=5),
-                    timeout=httpx.Timeout(30.0)
-                )
+                timeout=httpx.Timeout(60.0),
+                max_retries=3
             )
+            
+            # Test the connection
+            await self._test_connection()
+            
+            components_ready["openai_client"] = True
             logger.info("✅ OpenAI client initialized successfully")
+            
         except Exception as e:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
+            components_ready["openai_client"] = False
+            raise
+    
+    async def _test_connection(self):
+        """Test OpenAI connection"""
+        try:
+            response = await self.client.chat.completions.create(
+                messages=[{"role": "user", "content": "Hello"}],
+                model="gpt-4o",
+                max_tokens=5
+            )
+            logger.info("✅ OpenAI connection test successful")
+        except Exception as e:
+            logger.error(f"❌ OpenAI connection test failed: {e}")
             raise
     
     def _get_prompt_hash(self, messages: List[Dict], **kwargs) -> str:
-        """Generate hash for prompt caching"""
+        """FIXED: Generate hash for prompt caching"""
         prompt_data = {
-            "messages": messages,
+            "messages": json.dumps(messages, sort_keys=True),
             "model": kwargs.get("model", "gpt-4o"),
             "temperature": kwargs.get("temperature", 0.1),
             "max_tokens": kwargs.get("max_tokens", 1000)
         }
-        
         return hashlib.md5(json.dumps(prompt_data, sort_keys=True).encode()).hexdigest()
     
     async def optimized_completion(self, messages: List[Dict], **kwargs) -> str:
-        """Optimized completion with caching and retry logic"""
+        """FIXED: Optimized completion with proper error handling and caching"""
         if not self.client:
             raise ValueError("OpenAI client not initialized")
         
-        # Check cache first
+        # Check cache
         prompt_hash = self._get_prompt_hash(messages, **kwargs)
-        if prompt_hash in self.prompt_cache:
-            if LOG_VERBOSE:
-                logger.info("🔄 Using cached OpenAI response")
-            return self.prompt_cache[prompt_hash]
+        cached = self.prompt_cache.get(prompt_hash)
+        if cached:
+            return cached
         
-        # Check Redis cache
+        # Also check Redis cache
         redis_cached = await REDIS_CACHE.get_cached_response(prompt_hash)
-        if redis_cached:
-            result = redis_cached.get('content', '')
+        if redis_cached and 'content' in redis_cached:
+            result = redis_cached['content']
             self.prompt_cache[prompt_hash] = result
             return result
         
-        # Make API call with retry logic
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                response = await self.client.chat.completions.create(
-                    messages=messages,
-                    temperature=kwargs.get("temperature", 0.1),
-                    max_tokens=kwargs.get("max_tokens", 1000),
-                    model=kwargs.get("model", "gpt-4o")
-                )
-                
-                result = response.choices[0].message.content
-                
-                # Cache successful response
-                self.prompt_cache[prompt_hash] = result
-                await REDIS_CACHE.cache_response(prompt_hash, {"content": result})
-                
-                return result
-                
-            except openai.RateLimitError as e:
-                if attempt < max_retries - 1:
-                    delay = self.rate_limit_delay * (2 ** attempt)
-                    logger.warning(f"⏰ Rate limit hit, retrying in {delay}s...")
-                    await asyncio.sleep(delay)
-                    continue
-                raise
-            except Exception as e:
-                logger.error(f"❌ OpenAI API error (attempt {attempt + 1}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(1)
-                    continue
-                raise
-        
-        raise Exception("Max retries exceeded for OpenAI API call")
-
-# ================================
-# STARTUP AND SHUTDOWN - OPTIMIZED FOR CLOUD RUN
-# ================================
-
-async def initialize_components():
-    """Initialize all components with better error handling"""
-    global embedding_model, query_embedding_model, base_sentence_model, reranker, openai_client, pinecone_index
-    
-    try:
-        logger.info("🚀 Initializing Enhanced RAG System...")
-        
-        # Initialize OpenAI client first (most critical)
-        openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not openai_api_key:
-            logger.error("❌ OPENAI_API_KEY not found - this is required")
-            raise ValueError("OPENAI_API_KEY environment variable is required")
-        else:
-            openai_client = OptimizedOpenAIClient()
-            await openai_client.initialize(openai_api_key)
-        
-        # Initialize Pinecone connection
-        try:
-            # Updated Pinecone initialization for newer versions
-            import pinecone
-            
-            # Check if using new Pinecone client
-            try:
-                from pinecone import Pinecone as PineconeClient
-                pc = PineconeClient(api_key=PINECONE_API_KEY)
-                index_name = PINECONE_INDEX_NAME
-                
-                # Check if index exists
-                existing_indexes = [index.name for index in pc.list_indexes()]
-                if index_name not in existing_indexes:
-                    logger.info(f"📊 Creating Pinecone index: {index_name}")
-                    pc.create_index(
-                        name=index_name,
-                        dimension=384,
-                        metric="cosine",
-                        spec={
-                            "serverless": {
-                                "cloud": "aws",
-                                "region": "us-east-1"
-                            }
-                        }
+        # Make API call with semaphore to limit concurrency
+        async with self.request_semaphore:
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    response = await self.client.chat.completions.create(
+                        messages=messages,
+                        model=kwargs.get("model", "gpt-4o"),
+                        temperature=kwargs.get("temperature", 0.1),
+                        max_tokens=kwargs.get("max_tokens", 1000),
+                        timeout=60
                     )
-                
-                pinecone_index = pc.Index(index_name)
-                logger.info("✅ Pinecone index setup complete")
-                
-            except ImportError:
-                # Fallback to older Pinecone version
-                pinecone.init(
-                    api_key=PINECONE_API_KEY,
-                    environment=PINECONE_ENVIRONMENT
-                )
-                
-                index_name = PINECONE_INDEX_NAME
-                if index_name not in pinecone.list_indexes():
-                    logger.info(f"📊 Creating Pinecone index: {index_name}")
-                    pinecone.create_index(
-                        name=index_name,
-                        dimension=384,
-                        metric="cosine"
-                    )
-                
-                pinecone_index = pinecone.Index(index_name)
-                logger.info("✅ Pinecone index setup complete")
-                
-        except Exception as e:
-            logger.error(f"❌ Pinecone initialization failed: {e}")
-            pinecone_index = None
+                    
+                    result = response.choices[0].message.content
+                    
+                    # Cache successful response
+                    self.prompt_cache[prompt_hash] = result
+                    await REDIS_CACHE.cache_response(prompt_hash, {"content": result})
+                    
+                    return result
+                    
+                except openai.RateLimitError as e:
+                    if attempt < max_retries - 1:
+                        delay = self.rate_limit_delay * (2 ** attempt)
+                        logger.warning(f"⏰ Rate limit hit, waiting {delay}s...")
+                        await asyncio.sleep(delay)
+                        continue
+                    raise
+                    
+                except openai.APITimeoutError as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"⏰ Timeout, retrying... (attempt {attempt + 1})")
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    raise
+                    
+                except Exception as e:
+                    if attempt < max_retries - 1:
+                        logger.warning(f"⚠️ API error, retrying: {e}")
+                        await asyncio.sleep(2 ** attempt)
+                        continue
+                    raise
         
-        # Load ML models with better error handling
-        try:
-            logger.info("📊 Loading sentence transformer...")
-            base_sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("✅ Sentence transformer loaded")
-        except Exception as e:
-            logger.error(f"❌ Failed to load sentence transformer: {e}")
-            base_sentence_model = None
-        
-        try:
-            logger.info("📊 Loading embedding model...")
-            embedding_model = HuggingFaceEmbeddings(
-                model_name="all-MiniLM-L6-v2",
-                model_kwargs={'device': 'cpu'}
-            )
-            logger.info("✅ Embedding model loaded")
-        except Exception as e:
-            logger.error(f"❌ Failed to load embedding model: {e}")
-            embedding_model = None
-        
-        try:
-            logger.info("📊 Loading reranker...")
-            reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-2-v1')
-            logger.info("✅ Reranker loaded")
-        except Exception as e:
-            logger.error(f"❌ Failed to load reranker: {e}")
-            reranker = None
-        
-        # Initialize other components
-        try:
-            if base_sentence_model:
-                DOMAIN_DETECTOR.initialize_embeddings()
-                logger.info("✅ Domain detector initialized")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize domain detector: {e}")
-        
-        try:
-            await REDIS_CACHE.initialize()
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Redis: {e}")
-        
-        logger.info("✅ Component initialization completed")
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize: {e}")
-        # Don't raise - allow partial functionality
+        raise Exception("Max retries exceeded for OpenAI API")
 
 # ================================
-# ENHANCED TOKEN OPTIMIZATION
+# UNIVERSAL DOMAIN DETECTOR (FIXED)
 # ================================
 
-class TokenOptimizedProcessor:
-    """Smart token optimization for better cost efficiency"""
-    
-    def __init__(self):
-        self.max_tokens = {
-            'gpt-4o': 128000,
-            'context_reserve': 4000,
-            'prompt_overhead': 1000
-        }
-    
-    @lru_cache(maxsize=1000)
-    def estimate_tokens(self, text: str) -> int:
-        """Better token estimation for various content types"""
-        if not text:
-            return 0
-        
-        # Account for insurance jargon and technical terms
-        words = text.split()
-        # Better estimate for insurance docs (more complex vocabulary)
-        avg_chars_per_token = 3.8
-        return max(1, int(len(text) / avg_chars_per_token))
-    
-    def calculate_relevance_score(self, doc: Document, query: str) -> float:
-        """Calculate document relevance using cached embeddings"""
-        try:
-            if not base_sentence_model:
-                # Fallback to keyword matching if model not loaded
-                query_terms = set(query.lower().split())
-                doc_terms = set(doc.page_content.lower().split())
-                return len(query_terms.intersection(doc_terms)) / max(len(query_terms), 1)
-            
-            doc_embedding = self._get_cached_embedding(doc.page_content[:512])
-            query_embedding = self._get_cached_embedding(query)
-            
-            return float(util.cos_sim(doc_embedding, query_embedding)[0][0])
-        except Exception as e:
-            logger.warning(f"⚠️ Error calculating relevance: {e}")
-            # Fallback to keyword matching
-            query_terms = set(query.lower().split())
-            doc_terms = set(doc.page_content.lower().split())
-            return len(query_terms.intersection(doc_terms)) / max(len(query_terms), 1)
-    
-    @lru_cache(maxsize=5000)
-    def _get_cached_embedding(self, text: str) -> np.ndarray:
-        """Get cached embedding for text"""
-        cache_key = hashlib.md5(text.encode()).hexdigest()
-        if cache_key in EMBEDDING_CACHE:
-            return EMBEDDING_CACHE[cache_key]
-        
-        global base_sentence_model
-        if base_sentence_model is None:
-            # Return zero vector if model not loaded
-            return np.zeros(384)
-        
-        embedding = base_sentence_model.encode(text, convert_to_tensor=False)
-        EMBEDDING_CACHE[cache_key] = embedding
-        return embedding
-    
-    def optimize_context_intelligently(self, documents: List[Document], query: str, max_tokens: int = 4000) -> str:
-        """Enhanced context optimization with section-awareness"""
-        if not documents:
-            return ""
-        
-        # Calculate relevance scores and token counts
-        doc_scores = []
-        for doc in documents:
-            relevance = self.calculate_relevance_score(doc, query)
-            tokens = self.estimate_tokens(doc.page_content)
-            
-            # Enhanced boosting based on metadata
-            section_boost = 1.0
-            
-            # Boost for specific section types
-            section_type = doc.metadata.get('section_type', '')
-            if section_type in ['clause', 'coverage', 'definition']:
-                section_boost = 1.3
-            elif section_type in ['exclusion', 'procedure']:
-                section_boost = 1.2
-            
-            # Boost for complete sections
-            if doc.metadata.get('chunk_type') == 'complete_section':
-                section_boost *= 1.1
-            
-            # Boost for domain-specific content
-            domain_boost = 1.0
-            content_lower = doc.page_content.lower()
-            if any(keyword in content_lower for keyword in INSURANCE_KEYWORDS):
-                domain_boost = 1.2
-            elif any(keyword in content_lower for keyword in LEGAL_KEYWORDS):
-                domain_boost = 1.15
-            
-            efficiency = (relevance * section_boost * domain_boost) / max(tokens, 1)
-            doc_scores.append((doc, relevance, tokens, efficiency))
-        
-        # Sort by efficiency (relevance per token)
-        doc_scores.sort(key=lambda x: x[3], reverse=True)
-        
-        # Build context within budget - Enhanced strategy
-        context_parts = []
-        token_budget = max_tokens
-        section_headers_seen = set()
-        
-        for doc, relevance, tokens, efficiency in doc_scores:
-            if tokens <= token_budget:
-                # Add section header context if available and not seen
-                section_header = doc.metadata.get('section_header', '')
-                if section_header and section_header not in section_headers_seen:
-                    section_headers_seen.add(section_header)
-                
-                context_parts.append(doc.page_content)
-                token_budget -= tokens
-            elif token_budget > 200:  # Partial inclusion
-                partial_content = self._truncate_intelligently(doc.page_content, token_budget)
-                context_parts.append(partial_content)
-                break
-        
-        return "\n\n".join(context_parts)
-    
-    def _truncate_intelligently(self, content: str, max_tokens: int) -> str:
-        """Intelligently truncate content preserving important parts"""
-        max_chars = max_tokens * 4
-        if len(content) <= max_chars:
-            return content
-        
-        # Keep first and last parts, remove middle
-        keep_chars = max_chars - 100  # Reserve for truncation message
-        first_half = content[:keep_chars//2]
-        second_half = content[-keep_chars//2:]
-        
-        return f"{first_half}\n\n[... content truncated for optimization ...]\n\n{second_half}"
-
-# ================================
-# ENHANCED DOMAIN DETECTION
-# ================================
-
-class SemanticDomainDetector:
-    """Domain detection using enhanced semantic similarity"""
+class UniversalDomainDetector:
+    """FIXED: Universal domain detector that works for ALL document types"""
     
     def __init__(self):
         self.domain_embeddings = {}
+        self.fallback_cache = LRUCache(maxsize=500)
         
-        # Enhanced domain descriptions with more specific terms
+        # Enhanced universal domain descriptions
         self.domain_descriptions = {
-            "technical": "technical documentation engineering software development programming code architecture system design specifications API database network infrastructure configuration deployment",
-            "legal": "legal law regulation statute constitution court judicial legislation clause article provision contract agreement litigation compliance regulatory framework terms conditions liability jurisdiction",
-            "medical": "medical healthcare patient diagnosis treatment clinical therapy medicine hospital physician doctor surgery pharmaceutical health insurance medical coverage clinical trials disease symptoms",
-            "financial": "financial banking investment policy economics business finance accounting audit tax revenue profit loss balance sheet financial planning investment portfolio market analysis stock bonds",
-            "insurance": "insurance policy premium claim coverage deductible benefit exclusion waiting period pre-existing condition maternity critical illness hospitalization cashless network provider sum insured policyholder co-payment room rent sub-limit renewal grace period nominee life insurance health insurance motor insurance travel insurance cataract PED clause",
-            "academic": "academic research study analysis methodology scholarly scientific paper thesis journal publication university education learning curriculum dissertation peer review citation bibliography",
-            "business": "business corporate strategy management operations marketing sales human resources organizational development project management leadership team collaboration productivity efficiency",
-            "general": "general information document content text data knowledge base manual guide instructions reference material information overview summary"
+            "insurance": "insurance policy premium claim coverage benefit exclusion waiting period pre-existing condition maternity critical illness hospitalization cashless network provider sum insured policyholder deductible co-payment room rent sub-limit renewal grace period nominee life insurance health insurance motor insurance travel insurance cataract PED clause medical expenses organ donor NCD AYUSH",
+            "legal": "legal law regulation statute constitution court judicial legislation clause article provision contract agreement litigation compliance regulatory framework terms conditions liability jurisdiction attorney lawyer legal document court case legal proceedings legal advice legal opinion legal contract legal agreement",
+            "medical": "medical healthcare patient diagnosis treatment clinical therapy medicine hospital physician doctor surgery pharmaceutical health medical condition disease symptoms medical history medical report clinical study medical research healthcare provider medical treatment medical procedure medical diagnosis",
+            "financial": "financial banking investment policy economics business finance accounting audit tax revenue profit loss balance sheet financial planning investment portfolio market analysis stock bonds financial report financial statement financial data economic analysis financial strategy",
+            "technical": "technical documentation engineering software development programming code architecture system design specifications API database network infrastructure configuration deployment technical manual technical guide technical specifications system requirements technical documentation software documentation",
+            "academic": "academic research study analysis methodology scholarly scientific paper thesis journal publication university education learning curriculum dissertation peer review citation bibliography research paper academic study research methodology academic research scientific study",
+            "business": "business corporate strategy management operations marketing sales human resources organizational development project management leadership team collaboration productivity efficiency business plan business strategy business operations business management corporate governance",
+            "general": "general information document content text data knowledge base manual guide instructions reference material information overview summary general documentation general information general content"
         }
     
     def initialize_embeddings(self):
-        """Pre-compute domain embeddings"""
-        global base_sentence_model
-        if base_sentence_model is None:
-            logger.warning("⚠️ Base sentence model not loaded, skipping domain embeddings")
+        """FIXED: Initialize domain embeddings with proper error handling"""
+        if not base_sentence_model:
+            logger.warning("⚠️ Base model not loaded, skipping domain embeddings")
             return
         
         try:
             for domain, description in self.domain_descriptions.items():
-                self.domain_embeddings[domain] = base_sentence_model.encode(description, convert_to_tensor=False)
+                try:
+                    self.domain_embeddings[domain] = base_sentence_model.encode(
+                        description, 
+                        convert_to_tensor=False
+                    )
+                except Exception as e:
+                    logger.warning(f"⚠️ Failed to create embedding for domain {domain}: {e}")
+            
             logger.info(f"✅ Initialized embeddings for {len(self.domain_embeddings)} domains")
+            
         except Exception as e:
             logger.error(f"❌ Failed to initialize domain embeddings: {e}")
     
-    def detect_domain(self, documents: List[Document]) -> Tuple[str, float]:
-        """Enhanced domain detection with better content analysis"""
+    def detect_domain(self, documents: List[Document], confidence_threshold: float = 0.3) -> Tuple[str, float]:
+        """FIXED: Universal domain detection that works for ANY document type"""
         if not documents:
             return "general", 0.5
         
-        if not self.domain_embeddings or not base_sentence_model:
-            # Fallback to keyword-based detection
-            return self._fallback_domain_detection(documents)
+        # Create cache key
+        combined_text = ' '.join([doc.page_content[:500] for doc in documents[:10]])
+        cache_key = hashlib.md5(combined_text.encode()).hexdigest()[:16]
+        
+        if cache_key in self.fallback_cache:
+            return self.fallback_cache[cache_key]
         
         try:
-            # Use more content and focus on key sections
-            combined_content = []
-            for doc in documents[:15]:  # More documents for better context
-                content = doc.page_content
+            # Enhanced keyword-based detection (primary method)
+            domain_scores = self._keyword_based_detection(documents)
+            
+            # Semantic detection (if embeddings available)
+            if self.domain_embeddings and base_sentence_model:
+                semantic_scores = self._semantic_detection(documents)
+                # Combine keyword and semantic scores
+                for domain in domain_scores:
+                    if domain in semantic_scores:
+                        domain_scores[domain] = 0.7 * domain_scores[domain] + 0.3 * semantic_scores[domain]
+            
+            # Get best domain
+            if domain_scores:
+                best_domain = max(domain_scores, key=domain_scores.get)
+                best_score = domain_scores[best_domain]
                 
-                # Prioritize content with domain-specific keywords
-                if any(term in content.lower() for term in INSURANCE_KEYWORDS):
-                    combined_content.append(content[:1000])  # Longer segments for key content
-                elif any(term in content.lower() for term in LEGAL_KEYWORDS):
-                    combined_content.append(content[:1000])
-                else:
-                    combined_content.append(content[:500])
+                # Apply threshold
+                if best_score < confidence_threshold:
+                    best_domain = "general"
+                    best_score = confidence_threshold
+                
+                result = (best_domain, best_score)
+                self.fallback_cache[cache_key] = result
+                
+                if LOG_VERBOSE:
+                    logger.info(f"🔍 Domain detected: {best_domain} (confidence: {best_score:.2f})")
+                
+                return result
             
-            combined_text = ' '.join(combined_content)[:6000]  # More context
+            # Fallback
+            return "general", confidence_threshold
             
-            # Get content embedding
+        except Exception as e:
+            logger.warning(f"⚠️ Domain detection error: {e}")
+            return "general", confidence_threshold
+    
+    def _keyword_based_detection(self, documents: List[Document]) -> Dict[str, float]:
+        """FIXED: Enhanced keyword-based domain detection"""
+        combined_text = ' '.join([doc.page_content for doc in documents[:15]])[:8000].lower()
+        
+        domain_scores = {}
+        total_words = len(combined_text.split())
+        
+        for domain, keywords in DOMAIN_KEYWORDS.items():
+            matches = 0
+            for keyword in keywords:
+                # Count keyword occurrences
+                matches += combined_text.count(keyword.lower())
+            
+            # Calculate score based on keyword density
+            score = min(1.0, matches / max(1, len(keywords) * 0.1))  # Normalize
+            domain_scores[domain] = score
+        
+        return domain_scores
+    
+    def _semantic_detection(self, documents: List[Document]) -> Dict[str, float]:
+        """FIXED: Semantic domain detection"""
+        try:
+            combined_text = ' '.join([doc.page_content[:1000] for doc in documents[:10]])[:6000]
             content_embedding = base_sentence_model.encode(combined_text, convert_to_tensor=False)
             
-            # Calculate similarities to each domain
             domain_scores = {}
             for domain, domain_embedding in self.domain_embeddings.items():
                 similarity = float(util.cos_sim(content_embedding, domain_embedding)[0][0])
                 domain_scores[domain] = similarity
             
-            # Get best match
-            best_domain = max(domain_scores, key=domain_scores.get)
-            best_score = domain_scores[best_domain]
-            
-            # Check for specific content as fallback
-            if any(keyword in combined_text.lower() for keyword in INSURANCE_KEYWORDS[:5]):
-                if best_domain != "insurance":
-                    best_domain = "insurance"
-                    best_score = max(0.6, best_score)
-            elif any(keyword in combined_text.lower() for keyword in LEGAL_KEYWORDS[:5]):
-                if best_domain != "legal":
-                    best_domain = "legal"
-                    best_score = max(0.6, best_score)
-            
-            if LOG_VERBOSE:
-                logger.info(f"🔍 Domain detected: {best_domain} (confidence: {best_score:.2f})")
-            
-            return best_domain, best_score
+            return domain_scores
             
         except Exception as e:
-            logger.warning(f"⚠️ Error in domain detection: {e}")
-            return self._fallback_domain_detection(documents)
+            logger.warning(f"⚠️ Semantic detection error: {e}")
+            return {}
+
+# ================================
+# COMPONENT INITIALIZATION (FIXED)
+# ================================
+
+async def initialize_components():
+    """FIXED: Robust component initialization"""
+    global embedding_model, base_sentence_model, reranker, openai_client, pinecone_index
     
-    def _fallback_domain_detection(self, documents: List[Document]) -> Tuple[str, float]:
-        """Fallback domain detection using keywords"""
-        combined_text = ' '.join([doc.page_content for doc in documents[:5]])[:2000]
-        
-        # Enhanced keyword-based detection
-        if any(keyword in combined_text.lower() for keyword in INSURANCE_KEYWORDS):
-            return "insurance", 0.6
-        elif any(keyword in combined_text.lower() for keyword in LEGAL_KEYWORDS):
-            return "legal", 0.6
-        elif any(term in combined_text.lower() for term in ['medical', 'healthcare', 'patient', 'clinical']):
-            return "medical", 0.6
-        elif any(term in combined_text.lower() for term in ['financial', 'banking', 'investment', 'economic']):
-            return "financial", 0.6
-        elif any(term in combined_text.lower() for term in ['technical', 'engineering', 'software', 'system']):
-            return "technical", 0.6
-        elif any(term in combined_text.lower() for term in ['academic', 'research', 'study', 'university']):
-            return "academic", 0.6
-        elif any(term in combined_text.lower() for term in ['business', 'corporate', 'management', 'strategy']):
-            return "business", 0.6
+    logger.info("🚀 Initializing Enhanced RAG System...")
+    
+    try:
+        # 1. Initialize OpenAI client (CRITICAL)
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if openai_api_key:
+            openai_client = OptimizedOpenAIClient()
+            await openai_client.initialize(openai_api_key)
         else:
-            return "general", 0.5
+            logger.error("❌ OPENAI_API_KEY not found - system will not work properly")
+        
+        # 2. Initialize Redis (non-blocking)
+        try:
+            await REDIS_CACHE.initialize()
+        except Exception as e:
+            logger.warning(f"⚠️ Redis initialization failed: {e}")
+        
+        # 3. Initialize Pinecone (non-blocking)
+        try:
+            if PINECONE_API_KEY:
+                pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
+                
+                # Create or get index
+                if PINECONE_INDEX_NAME not in pinecone.list_indexes():
+                    pinecone.create_index(
+                        name=PINECONE_INDEX_NAME,
+                        dimension=384,
+                        metric="cosine"
+                    )
+                
+                pinecone_index = pinecone.Index(PINECONE_INDEX_NAME)
+                components_ready["pinecone"] = True
+                logger.info("✅ Pinecone initialized")
+        except Exception as e:
+            logger.warning(f"⚠️ Pinecone initialization failed: {e}")
+        
+        # 4. Start background loading of heavy models
+        asyncio.create_task(load_heavy_components())
+        
+        logger.info("✅ Component initialization complete")
+        
+    except Exception as e:
+        logger.error(f"❌ Component initialization failed: {e}")
+        raise
 
-# Global domain detector
-DOMAIN_DETECTOR = SemanticDomainDetector()
+async def load_heavy_components():
+    """FIXED: Load heavy components in background with proper error handling"""
+    global base_sentence_model, embedding_model, reranker
+    
+    logger.info("🔄 Loading heavy components in background...")
+    
+    # Load sentence transformer
+    try:
+        logger.info("📊 Loading sentence transformer...")
+        base_sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
+        components_ready["base_sentence_model"] = True
+        logger.info("✅ Sentence transformer loaded")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to load sentence transformer: {e}")
+        components_ready["base_sentence_model"] = False
+    
+    # Load embedding model
+    try:
+        logger.info("📊 Loading embedding model...")
+        embedding_model = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'}
+        )
+        components_ready["embedding_model"] = True
+        logger.info("✅ Embedding model loaded")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to load embedding model: {e}")
+        components_ready["embedding_model"] = False
+    
+    # Load reranker
+    try:
+        logger.info("📊 Loading reranker...")
+        reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-2-v1')
+        components_ready["reranker"] = True
+        logger.info("✅ Reranker loaded")
+    except Exception as e:
+        logger.warning(f"⚠️ Failed to load reranker: {e}")
+        components_ready["reranker"] = False
+    
+    # Initialize domain detector
+    try:
+        if base_sentence_model:
+            DOMAIN_DETECTOR.initialize_embeddings()
+            logger.info("✅ Domain detector initialized")
+    except Exception as e:
+        logger.warning(f"⚠️ Domain detector initialization failed: {e}")
+    
+    logger.info("✅ Background component loading complete")
 
 # ================================
-# SESSION OBJECT AND RAG SYSTEM
+# TOKEN OPTIMIZATION (FIXED)
 # ================================
 
-T = TypeVar('T')
+class TokenOptimizedProcessor:
+    """FIXED: Advanced token optimization for efficiency"""
+    
+    def __init__(self):
+        self.max_context_tokens = 4000
+        self.token_buffer = 500  # Reserve for response
+    
+    @lru_cache(maxsize=2000)
+    def estimate_tokens(self, text: str) -> int:
+        """FIXED: Accurate token estimation"""
+        if not text:
+            return 0
+        
+        # More accurate token estimation
+        # Account for different content types
+        words = text.split()
+        avg_chars_per_token = 3.5  # Better estimate for general text
+        
+        # Adjust for technical content
+        if any(term in text.lower() for term in ['api', 'json', 'xml', 'code', 'function']):
+            avg_chars_per_token = 3.0  # Technical content has more tokens
+        
+        estimated = len(text) / avg_chars_per_token
+        return max(1, int(estimated * 1.1))  # Add 10% buffer
+    
+    def calculate_relevance_score(self, doc: Document, query: str) -> float:
+        """FIXED: Calculate document relevance with multiple factors"""
+        try:
+            # Keyword overlap
+            query_terms = set(query.lower().split())
+            doc_terms = set(doc.page_content.lower().split())
+            keyword_overlap = len(query_terms.intersection(doc_terms)) / max(len(query_terms), 1)
+            
+            # Position boost (earlier chunks often more relevant)
+            position_boost = 1.0
+            chunk_index = doc.metadata.get('chunk_index', 0)
+            total_chunks = doc.metadata.get('total_chunks', 1)
+            if total_chunks > 1:
+                position_boost = 1.2 - (chunk_index / total_chunks) * 0.4  # Boost earlier chunks
+            
+            # Section type boost
+            section_boost = 1.0
+            section_type = doc.metadata.get('section_type', '')
+            if section_type in ['summary', 'introduction', 'conclusion']:
+                section_boost = 1.15
+            elif section_type in ['content', 'methodology']:
+                section_boost = 1.1
+            
+            # Complete section boost
+            if doc.metadata.get('chunk_type') == 'complete_section':
+                section_boost *= 1.05
+            
+            # Try semantic similarity if possible
+            semantic_score = 0.5  # Default
+            if base_sentence_model:
+                try:
+                    doc_embedding = self._get_cached_embedding(doc.page_content[:512])
+                    query_embedding = self._get_cached_embedding(query)
+                    semantic_score = float(util.cos_sim(doc_embedding, query_embedding)[0][0])
+                except Exception:
+                    pass  # Use default if semantic fails
+            
+            # Combine scores
+            final_score = (
+                0.4 * semantic_score +
+                0.3 * keyword_overlap +
+                0.2 * position_boost +
+                0.1 * section_boost
+            )
+            
+            return min(1.0, final_score)
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error calculating relevance: {e}")
+            return 0.5  # Fallback score
+    
+    @lru_cache(maxsize=3000)
+    def _get_cached_embedding(self, text: str) -> np.ndarray:
+        """FIXED: Get cached embedding with proper fallback"""
+        if not text.strip():
+            return np.zeros(384)
+        
+        cache_key = hashlib.md5(text.encode()).hexdigest()
+        
+        if cache_key in EMBEDDING_CACHE:
+            return EMBEDDING_CACHE[cache_key]
+        
+        if base_sentence_model:
+            try:
+                embedding = base_sentence_model.encode(text, convert_to_tensor=False)
+                EMBEDDING_CACHE[cache_key] = embedding
+                return embedding
+            except Exception:
+                pass
+        
+        # Return zero vector as fallback
+        return np.zeros(384)
+    
+    def optimize_context_intelligently(self, documents: List[Document], query: str, max_tokens: int = None) -> str:
+        """FIXED: Intelligent context optimization"""
+        if not documents:
+            return ""
+        
+        if max_tokens is None:
+            max_tokens = self.max_context_tokens
+        
+        # Calculate scores for all documents
+        doc_scores = []
+        for doc in documents:
+            relevance = self.calculate_relevance_score(doc, query)
+            tokens = self.estimate_tokens(doc.page_content)
+            
+            # Efficiency score (relevance per token)
+            efficiency = relevance / max(tokens, 1)
+            
+            doc_scores.append((doc, relevance, tokens, efficiency))
+        
+        # Sort by efficiency
+        doc_scores.sort(key=lambda x: x[3], reverse=True)
+        
+        # Build context within budget
+        context_parts = []
+        token_budget = max_tokens - self.token_buffer
+        
+        for doc, relevance, tokens, efficiency in doc_scores:
+            if tokens <= token_budget:
+                context_parts.append(doc.page_content)
+                token_budget -= tokens
+            elif token_budget > 200:  # Partial inclusion for important docs
+                if relevance > 0.7:  # Only for high-relevance docs
+                    partial_content = self._truncate_content(doc.page_content, token_budget)
+                    context_parts.append(partial_content)
+                break
+        
+        context = "\n\n".join(context_parts)
+        
+        if LOG_VERBOSE:
+            estimated_tokens = self.estimate_tokens(context)
+            logger.info(f"📝 Context optimized: {len(context_parts)} documents, ~{estimated_tokens} tokens")
+        
+        return context
+    
+    def _truncate_content(self, content: str, max_tokens: int) -> str:
+        """FIXED: Smart content truncation"""
+        max_chars = max_tokens * 4
+        
+        if len(content) <= max_chars:
+            return content
+        
+        # Keep beginning and end
+        keep_chars = max_chars - 100  # Reserve for truncation message
+        first_part = content[:keep_chars//2]
+        last_part = content[-keep_chars//2:]
+        
+        return f"{first_part}\n\n[... content truncated for token efficiency ...]\n\n{last_part}"
 
-class SessionObject(Generic[T]):
-    """Generic session object with TTL management"""
-    
-    def __init__(self, session_id: str, data: T, ttl: int = SESSION_TTL):
-        self.session_id = session_id
-        self.data = data
-        self.created_at = time.time()
-        self.last_accessed = time.time()
-        self.ttl = ttl
-    
-    def is_expired(self) -> bool:
-        """Check if session is expired"""
-        return (time.time() - self.last_accessed) > self.ttl
-    
-    def touch(self):
-        """Update last accessed time"""
-        self.last_accessed = time.time()
-    
-    def get_data(self) -> T:
-        """Get data and update access time"""
-        self.touch()
-        return self.data
+# ================================
+# ENHANCED RAG SYSTEM (FIXED)
+# ================================
 
 class EnhancedRAGSystem:
-    """Enhanced RAG system with all improvements"""
+    """FIXED: Enhanced RAG system that works for ALL document types"""
     
     def __init__(self, session_id: str = None):
         self.session_id = session_id or str(uuid.uuid4())
@@ -999,12 +1143,12 @@ class EnhancedRAGSystem:
         self.vector_store = None
         self.bm25_retriever = None
         self.domain = "general"
-        self.domain_config = DEFAULT_DOMAIN_CONFIG.copy()
+        self.domain_config = UNIVERSAL_CONFIG.copy()
         self.document_hash = None
         self.processed_files = []
         self.token_processor = TokenOptimizedProcessor()
         self._processing_lock = asyncio.Lock()
-        self.intelligent_splitter = None
+        self.text_splitter = None
     
     async def __aenter__(self):
         return self
@@ -1013,18 +1157,13 @@ class EnhancedRAGSystem:
         await self.cleanup()
     
     async def cleanup(self):
-        """Optimized cleanup with proper resource management"""
+        """FIXED: Proper cleanup with error handling"""
         try:
-            if self.vector_store:
-                try:
-                    # Pinecone doesn't need explicit cleanup like Chroma
-                    pass
-                except Exception as e:
-                    logger.warning(f"⚠️ Error cleaning vector store: {e}")
-                finally:
-                    self.vector_store = None
+            # Clear vector store references
+            self.vector_store = None
+            self.bm25_retriever = None
             
-            # Clear references
+            # Clear document references
             self.documents.clear()
             self.processed_files.clear()
             
@@ -1032,32 +1171,29 @@ class EnhancedRAGSystem:
                 logger.info(f"🧹 Session {self.session_id} cleaned up")
                 
         except Exception as e:
-            logger.error(f"❌ Cleanup error: {e}")
+            logger.warning(f"⚠️ Cleanup error: {e}")
     
     def calculate_document_hash(self, documents: List[Document]) -> str:
-        """Calculate unique hash for documents"""
-        content_sample = "".join([doc.page_content[:200] for doc in documents[:10]])
+        """FIXED: Calculate unique hash for documents"""
+        content_sample = "".join([doc.page_content[:100] for doc in documents[:5]])
         return hashlib.sha256(content_sample.encode()).hexdigest()[:16]
     
     async def process_documents(self, file_paths: List[str]) -> Dict[str, Any]:
-        """Process documents with enhanced chunking and domain detection"""
+        """FIXED: Process documents with universal support"""
         async with self._processing_lock:
+            start_time = time.time()
+            
             try:
-                # Load documents
+                if not file_paths:
+                    raise HTTPException(status_code=400, detail="No file paths provided")
+                
+                logger.info(f"📄 Processing {len(file_paths)} documents")
+                
+                # Load documents with better error handling
                 raw_documents = []
                 for file_path in file_paths:
                     try:
-                        file_extension = os.path.splitext(file_path)[1].lower()
-                        if file_extension == '.pdf':
-                            loader = PyMuPDFLoader(file_path)
-                        elif file_extension == '.docx':
-                            loader = Docx2txtLoader(file_path)
-                        elif file_extension == '.txt':
-                            loader = TextLoader(file_path, encoding='utf-8')
-                        else:
-                            continue
-                        
-                        docs = await asyncio.to_thread(loader.load)
+                        docs = await self._load_document(file_path)
                         raw_documents.extend(docs)
                     except Exception as e:
                         logger.warning(f"⚠️ Error loading {file_path}: {e}")
@@ -1066,550 +1202,501 @@ class EnhancedRAGSystem:
                 if not raw_documents:
                     raise HTTPException(status_code=400, detail="No documents could be loaded")
                 
-                # Enhanced domain detection
-                self.domain, domain_confidence = DOMAIN_DETECTOR.detect_domain(raw_documents)
-                self.domain_config = DOMAIN_CONFIGS.get(self.domain, DEFAULT_DOMAIN_CONFIG).copy()
+                # Universal domain detection
+                domain, domain_confidence = DOMAIN_DETECTOR.detect_domain(raw_documents)
+                self.domain = domain
+                self.domain_config = DOMAIN_CONFIGS.get(domain, UNIVERSAL_CONFIG).copy()
                 
-                logger.info(f"🔍 Detected domain: {self.domain} (confidence: {domain_confidence:.2f})")
+                logger.info(f"🔍 Detected domain: {domain} (confidence: {domain_confidence:.2f})")
                 
-                # Initialize intelligent splitter with domain-specific config
-                self.intelligent_splitter = IntelligentTextSplitter(
+                # Initialize universal text splitter
+                self.text_splitter = UniversalTextSplitter(
                     chunk_size=self.domain_config["chunk_size"],
                     chunk_overlap=self.domain_config["chunk_overlap"],
-                    domain=self.domain
+                    domain=domain
                 )
                 
-                # Update document metadata with domain and enhanced info
+                # Enhanced metadata
                 for doc in raw_documents:
                     doc.metadata.update({
-                        'detected_domain': self.domain,
+                        'detected_domain': domain,
                         'domain_confidence': domain_confidence,
                         'session_id': self.session_id,
-                        'processing_timestamp': datetime.now().isoformat()
+                        'processing_timestamp': datetime.now().isoformat(),
+                        'file_type': self._get_file_type(doc.metadata.get('source', ''))
                     })
                 
-                # ENHANCED CHUNKING - Section-aware splitting
-                logger.info("📄 Starting intelligent document chunking...")
-                self.documents = self.intelligent_splitter.split_documents(raw_documents)
+                # Universal document chunking
+                logger.info("🔄 Starting universal document chunking...")
+                self.documents = self.text_splitter.split_documents(raw_documents)
                 
-                # Filter out very short chunks
-                self.documents = [doc for doc in self.documents if len(doc.page_content.strip()) > 50]
+                # Filter very short chunks
+                self.documents = [doc for doc in self.documents if len(doc.page_content.strip()) >= 30]
                 
                 self.document_hash = self.calculate_document_hash(self.documents)
                 self.processed_files = [os.path.basename(fp) for fp in file_paths]
                 
-                # Setup retrievers with enhanced configuration
-                await self._setup_enhanced_retrievers()
+                # Setup retrievers
+                await self._setup_universal_retrievers()
+                
+                processing_time = time.time() - start_time
                 
                 result = {
                     'session_id': self.session_id,
                     'document_hash': self.document_hash,
-                    'domain': self.domain,
+                    'domain': domain,
                     'domain_confidence': domain_confidence,
                     'total_chunks': len(self.documents),
                     'processed_files': self.processed_files,
                     'chunk_size': self.domain_config["chunk_size"],
                     'chunk_overlap': self.domain_config["chunk_overlap"],
+                    'processing_time': processing_time,
                     'enhanced_features': {
-                        'intelligent_chunking': True,
-                        'section_awareness': True,
+                        'universal_chunking': True,
+                        'domain_adaptive': True,
                         'metadata_enrichment': True,
-                        'mmr_enabled': self.domain_config.get("use_mmr", False),
+                        'mmr_enabled': self.domain_config.get("use_mmr", True),
                         'reranking_enabled': True
                     }
                 }
                 
                 if LOG_VERBOSE:
-                    logger.info(f"✅ Enhanced processing complete: {result}")
+                    logger.info(f"✅ Processing complete in {processing_time:.2f}s: {result}")
                 
                 return result
                 
             except Exception as e:
                 logger.error(f"❌ Document processing error: {e}")
-                raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
+                raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
     
-    async def _setup_enhanced_retrievers(self):
-        """Setup enhanced retrievers with MMR and metadata support"""
+    async def _load_document(self, file_path: str) -> List[Document]:
+        """FIXED: Universal document loader"""
         try:
-            global embedding_model, pinecone_index
-
-            # Use namespace for document isolation
-            namespace = f"{self.domain}_{self.document_hash}"
-
-            if LOG_VERBOSE:
-                logger.info(f"🔧 Setting up enhanced retrievers with namespace: {namespace}")
-
-            # Create vector store with Pinecone if available
-            if pinecone_index and embedding_model:
+            file_extension = os.path.splitext(file_path)[1].lower()
+            
+            # Support all document types
+            if file_extension == '.pdf':
+                loader = PyMuPDFLoader(file_path)
+            elif file_extension in ['.docx', '.doc']:
+                loader = Docx2txtLoader(file_path)
+            elif file_extension in ['.txt', '.md', '.csv']:
+                loader = TextLoader(file_path, encoding='utf-8')
+            else:
+                # Try to load as text
+                logger.info(f"📄 Unknown extension {file_extension}, trying as text...")
+                loader = TextLoader(file_path, encoding='utf-8')
+            
+            docs = await asyncio.to_thread(loader.load)
+            
+            if not docs:
+                raise ValueError(f"No content loaded from {file_path}")
+            
+            logger.info(f"✅ Loaded {len(docs)} documents from {file_path}")
+            return docs
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to load {file_path}: {e}")
+            raise
+    
+    def _get_file_type(self, source_path: str) -> str:
+        """Get file type from path"""
+        extension = os.path.splitext(source_path)[1].lower()
+        type_mapping = {
+            '.pdf': 'pdf',
+            '.docx': 'docx', '.doc': 'docx',
+            '.txt': 'text', '.md': 'markdown',
+            '.csv': 'csv'
+        }
+        return type_mapping.get(extension, 'unknown')
+    
+    async def _setup_universal_retrievers(self):
+        """FIXED: Setup universal retrievers that work for all domains"""
+        try:
+            logger.info("🔧 Setting up universal retrievers...")
+            
+            # Setup vector store if components available
+            if pinecone_index and embedding_model and embedding_model != "initializing":
                 try:
+                    namespace = f"{self.domain}_{self.document_hash}"
+                    
                     self.vector_store = Pinecone(
                         index=pinecone_index,
                         embedding=embedding_model,
                         text_key="text",
                         namespace=namespace
                     )
-
-                    # Check if documents exist in namespace
-                    try:
-                        stats = pinecone_index.describe_index_stats()
-                        namespace_stats = stats.get('namespaces', {}).get(namespace, {})
-                        vector_count = namespace_stats.get('vector_count', 0)
+                    
+                    # Check if documents already exist
+                    stats = pinecone_index.describe_index_stats()
+                    current_count = stats.get('namespaces', {}).get(namespace, {}).get('vector_count', 0)
+                    
+                    if current_count < len(self.documents):
+                        logger.info(f"📊 Adding {len(self.documents)} documents to vector store")
                         
-                        if vector_count == 0:
-                            if LOG_VERBOSE:
-                                logger.info(f"📊 Adding {len(self.documents)} documents to Pinecone")
+                        # Batch process for efficiency
+                        batch_size = 50
+                        for i in range(0, len(self.documents), batch_size):
+                            batch = self.documents[i:i + batch_size]
+                            await asyncio.to_thread(self.vector_store.add_documents, batch)
                             
-                            # Batch processing for large document sets
-                            if len(self.documents) > 50:
-                                await self._batch_add_to_pinecone()
-                            else:
-                                await asyncio.to_thread(
-                                    self.vector_store.add_documents,
-                                    self.documents
-                                )
-                        else:
                             if LOG_VERBOSE:
-                                logger.info(f"📂 Found {vector_count} documents in Pinecone namespace, reusing")
-                                
-                    except Exception as stats_error:
-                        logger.warning(f"⚠️ Could not check Pinecone stats, proceeding with document addition: {stats_error}")
-                        # Add documents anyway
-                        await asyncio.to_thread(
-                            self.vector_store.add_documents,
-                            self.documents[:10]  # Limit for safety
-                        )
-                        
-                except Exception as pinecone_error:
-                    logger.warning(f"⚠️ Error setting up Pinecone vector store: {pinecone_error}")
-                    self.vector_store = None
-
-            # Setup enhanced BM25 retriever
+                                logger.info(f"📊 Processed batch {i//batch_size + 1}/{(len(self.documents)-1)//batch_size + 1}")
+                    
+                    logger.info("✅ Vector store setup complete")
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ Vector store setup failed: {e}")
+            
+            # Setup BM25 retriever
             try:
-                self.bm25_retriever = await asyncio.to_thread(BM25Retriever.from_documents, self.documents)
-                # ENHANCED: Increase BM25 retrieval count
-                self.bm25_retriever.k = self.domain_config["rerank_top_k"]
-                if LOG_VERBOSE:
-                    logger.info(f"✅ Enhanced BM25 retriever setup complete (k={self.bm25_retriever.k})")
+                if self.documents:
+                    self.bm25_retriever = await asyncio.to_thread(
+                        BM25Retriever.from_documents, 
+                        self.documents
+                    )
+                    self.bm25_retriever.k = min(self.domain_config["rerank_top_k"], len(self.documents))
+                    logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
+            
             except Exception as e:
-                logger.warning(f"⚠️ Error setting up BM25 retriever: {e}")
-                self.bm25_retriever = None
-
+                logger.warning(f"⚠️ BM25 retriever setup failed: {e}")
+            
         except Exception as e:
-            logger.error(f"❌ Enhanced retriever setup error: {e}")
-            logger.error(f"❌ Traceback: {traceback.format_exc()}")
-    
-    async def _batch_add_to_pinecone(self):
-        """Batch add documents to Pinecone for better performance"""
-        batch_size = 32
-        total_docs = len(self.documents)
-        
-        if LOG_VERBOSE:
-            logger.info(f"🔄 Batch adding {total_docs} documents to Pinecone in batches of {batch_size}")
-        
-        for i in range(0, total_docs, batch_size):
-            batch = self.documents[i:i + batch_size]
-            try:
-                await asyncio.to_thread(
-                    self.vector_store.add_documents,
-                    batch
-                )
-                
-                if LOG_VERBOSE:
-                    logger.info(f"📊 Added batch {i//batch_size + 1}/{(total_docs-1)//batch_size + 1}")
-            except Exception as e:
-                logger.warning(f"⚠️ Error adding batch {i//batch_size + 1}: {e}")
-        
-        if LOG_VERBOSE:
-            logger.info("✅ Batch addition to Pinecone completed")
+            logger.error(f"❌ Retriever setup error: {e}")
     
     async def enhanced_retrieve_and_rerank(self, query: str, top_k: int = None) -> Tuple[List[Document], List[float]]:
-        """ENHANCED retrieval with MMR, metadata filtering, and increased retrieval"""
+        """FIXED: Enhanced retrieval that works universally"""
         if top_k is None:
             top_k = self.domain_config["context_docs"]
-
+        
         try:
-            # Check if components are loaded
-            if not base_sentence_model:
-                logger.warning("⚠️ Components not loaded, returning available results")
-                available_docs = self.documents[:top_k] if self.documents else []
-                return available_docs, [0.8] * len(available_docs)
-
-            # ENHANCEMENT 1: Increased retrieval quantity
-            semantic_k = self.domain_config["semantic_search_k"]
-            rerank_k = self.domain_config["rerank_top_k"]
-
+            if not self.documents:
+                return [], []
+            
+            # Get retrieval parameters
+            semantic_k = min(self.domain_config["semantic_search_k"], len(self.documents))
+            rerank_k = min(self.domain_config["rerank_top_k"], len(self.documents))
+            
             if LOG_VERBOSE:
-                logger.info(f"🔍 Enhanced retrieval: semantic_k={semantic_k}, rerank_k={rerank_k}, final_k={top_k}")
-
-            # Create embedding task immediately
-            embedding_task = asyncio.create_task(
-                EMBEDDING_SERVICE.get_query_embedding(query)
-            )
-
-            # Parallel retrieval tasks
+                logger.info(f"🔍 Retrieving: semantic_k={semantic_k}, rerank_k={rerank_k}, final_k={top_k}")
+            
+            # Parallel retrieval
             tasks = []
             
-            # ENHANCEMENT 2: MMR-enabled vector search
+            # Vector search
             if self.vector_store:
                 if self.domain_config.get("use_mmr", True):
-                    vector_task = asyncio.create_task(
-                        self._mmr_vector_search(query, semantic_k)
-                    )
+                    tasks.append(self._mmr_search(query, semantic_k))
                 else:
-                    vector_task = asyncio.create_task(
-                        self._vector_search_optimized(query, semantic_k)
-                    )
-                tasks.append(vector_task)
-
-            # Enhanced BM25 search task
-            if self.bm25_retriever:
-                bm25_task = asyncio.create_task(
-                    asyncio.to_thread(self.bm25_retriever.get_relevant_documents, query)
-                )
-                tasks.append(bm25_task)
-
-            # Wait for embedding and searches simultaneously
-            embedding = await embedding_task
-            search_results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
-
-            # ENHANCEMENT 3: Enhanced merge and rerank with metadata awareness
-            return await self._enhanced_merge_and_rerank(query, search_results, embedding, top_k, rerank_k)
-
-        except Exception as e:
-            logger.error(f"❌ Enhanced retrieval error: {e}")
-            logger.error(f"❌ Traceback: {traceback.format_exc()}")
-            # Fallback to basic document retrieval with better scores
-            fallback_docs = self.documents[:top_k] if self.documents else []
-            return fallback_docs, [0.7] * len(fallback_docs)
-    
-    async def _mmr_vector_search(self, query: str, k: int) -> List[Tuple[Document, float]]:
-        """MMR-enabled vector search for diversity"""
-        try:
-            if not self.vector_store:
-                return []
-
-            # Use MMR search for diversity
-            lambda_mult = self.domain_config.get("mmr_lambda", 0.7)
+                    tasks.append(self._vector_search(query, semantic_k))
             
-            # Fix: Handle the actual return format from Pinecone
-            try:
-                results = await asyncio.to_thread(
-                    self.vector_store.max_marginal_relevance_search_with_score,
-                    query,
-                    k=min(k, 30),
-                    lambda_mult=lambda_mult
-                )
-                
-                # Ensure results are in correct format (Document, score)
-                formatted_results = []
-                for item in results:
-                    if isinstance(item, tuple) and len(item) == 2:
-                        doc, score = item
-                        formatted_results.append((doc, float(score)))
-                    elif hasattr(item, 'page_content'):
-                        # If it's just a document without score
-                        formatted_results.append((item, 0.8))
-                
-                if LOG_VERBOSE:
-                    logger.info(f"🔄 MMR search returned {len(formatted_results)} diverse results (λ={lambda_mult})")
-                
-                return formatted_results
-                
-            except Exception as mmr_error:
-                logger.warning(f"⚠️ MMR search failed, falling back to similarity search: {mmr_error}")
-                return await self._vector_search_optimized(query, k)
-
+            # BM25 search
+            if self.bm25_retriever:
+                tasks.append(self._bm25_search(query))
+            
+            # Execute searches
+            if tasks:
+                search_results = await asyncio.gather(*tasks, return_exceptions=True)
+            else:
+                # Fallback to document similarity
+                search_results = [await self._fallback_search(query, semantic_k)]
+            
+            # Merge and rerank
+            return await self._merge_and_rerank(query, search_results, top_k, rerank_k)
+            
         except Exception as e:
-            logger.error(f"❌ MMR vector search error: {e}")
-            return []
+            logger.error(f"❌ Retrieval error: {e}")
+            # Return top documents as fallback
+            return self.documents[:top_k], [0.5] * min(len(self.documents), top_k)
     
-    async def _vector_search_optimized(self, query: str, k: int) -> List[Tuple[Document, float]]:
-        """Optimized vector search with Pinecone"""
+    async def _mmr_search(self, query: str, k: int) -> List[Tuple[Document, float]]:
+        """FIXED: MMR search with proper error handling"""
         try:
-            if not self.vector_store:
-                return []
-
+            lambda_mult = self.domain_config.get("mmr_lambda", 0.75)
+            results = await asyncio.to_thread(
+                self.vector_store.max_marginal_relevance_search_with_score,
+                query,
+                k=k,
+                lambda_mult=lambda_mult
+            )
+            return results
+        except Exception as e:
+            logger.warning(f"⚠️ MMR search error: {e}")
+            return await self._vector_search(query, k)
+    
+    async def _vector_search(self, query: str, k: int) -> List[Tuple[Document, float]]:
+        """FIXED: Vector search with error handling"""
+        try:
             results = await asyncio.to_thread(
                 self.vector_store.similarity_search_with_score,
                 query,
-                k=min(k, 25)
+                k=k
             )
-            
-            # Ensure results are properly formatted
-            formatted_results = []
-            for item in results:
-                if isinstance(item, tuple) and len(item) == 2:
-                    doc, score = item
-                    # Convert distance to similarity score if needed
-                    if hasattr(score, '__float__'):
-                        similarity_score = max(0.1, min(1.0, 1.0 - float(score)))
-                    else:
-                        similarity_score = 0.7
-                    formatted_results.append((doc, similarity_score))
-                elif hasattr(item, 'page_content'):
-                    formatted_results.append((item, 0.7))
-            
-            return formatted_results
-
+            return results
         except Exception as e:
-            logger.error(f"❌ Vector search error: {e}")
+            logger.warning(f"⚠️ Vector search error: {e}")
             return []
     
-    async def _enhanced_merge_and_rerank(self, query: str, search_results: List, embedding: np.ndarray,
-                                       top_k: int, rerank_k: int) -> Tuple[List[Document], List[float]]:
-        """Enhanced merge and rerank with metadata awareness"""
+    async def _bm25_search(self, query: str) -> List[Document]:
+        """FIXED: BM25 search"""
+        try:
+            return await asyncio.to_thread(self.bm25_retriever.get_relevant_documents, query)
+        except Exception as e:
+            logger.warning(f"⚠️ BM25 search error: {e}")
+            return []
+    
+    async def _fallback_search(self, query: str, k: int) -> List[Tuple[Document, float]]:
+        """FIXED: Fallback search using keyword matching"""
+        try:
+            query_terms = set(query.lower().split())
+            doc_scores = []
+            
+            for doc in self.documents:
+                doc_terms = set(doc.page_content.lower().split())
+                overlap = len(query_terms.intersection(doc_terms))
+                score = overlap / max(len(query_terms), 1)
+                doc_scores.append((doc, score))
+            
+            # Sort by score and return top k
+            doc_scores.sort(key=lambda x: x[1], reverse=True)
+            return doc_scores[:k]
+            
+        except Exception as e:
+            logger.error(f"❌ Fallback search error: {e}")
+            return [(doc, 0.5) for doc in self.documents[:k]]
+    
+    async def _merge_and_rerank(self, query: str, search_results: List, top_k: int, rerank_k: int) -> Tuple[List[Document], List[float]]:
+        """FIXED: Merge and rerank results"""
         all_docs = []
         all_scores = []
-        seen_content = set()  # Avoid duplicates
-
+        seen_content = set()
+        
         # Process vector search results
         if search_results and not isinstance(search_results[0], Exception):
-            vector_results = search_results[0]
-            if vector_results:
-                for item in vector_results:
-                    try:
-                        if isinstance(item, tuple) and len(item) >= 2:
-                            doc, score = item[0], item[1]
-                        elif hasattr(item, 'page_content'):
-                            doc, score = item, 0.7
-                        else:
-                            continue
-                        
-                        content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
-                        if content_hash not in seen_content:
-                            all_docs.append(doc)
-                            # Better score normalization
-                            similarity_score = max(0.3, min(1.0, float(score)))
-                            all_scores.append(similarity_score)
-                            seen_content.add(content_hash)
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error processing vector result: {e}")
-                        continue
-
+            for doc, score in search_results[0]:
+                content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+                if content_hash not in seen_content:
+                    all_docs.append(doc)
+                    # Normalize score to 0-1
+                    normalized_score = max(0.0, min(1.0, (2.0 - score) / 2.0)) if score > 1.0 else score
+                    all_scores.append(normalized_score)
+                    seen_content.add(content_hash)
+        
         # Process BM25 results
         if len(search_results) > 1 and not isinstance(search_results[1], Exception):
-            bm25_docs = search_results[1]
-            if bm25_docs:
-                for doc in bm25_docs[:rerank_k]:
-                    try:
-                        content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
-                        if content_hash not in seen_content:
-                            all_docs.append(doc)
-                            all_scores.append(0.8)  # Higher default BM25 score
-                            seen_content.add(content_hash)
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error processing BM25 result: {e}")
-                        continue
-
-        # If no search results, use more documents from the collection
-        if not all_docs and self.documents:
+            for doc in search_results[1][:rerank_k]:
+                content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+                if content_hash not in seen_content:
+                    all_docs.append(doc)
+                    all_scores.append(0.6)  # Default BM25 score
+                    seen_content.add(content_hash)
+        
+        # If no results, use top documents
+        if not all_docs:
             all_docs = self.documents[:rerank_k]
-            all_scores = [0.7] * len(all_docs)
-
-        # ENHANCEMENT 4: Enhanced metadata-aware reranking
-        if all_docs and len(all_docs) > 1 and reranker:
+            all_scores = [0.4] * len(all_docs)
+        
+        # Rerank if reranker available
+        if reranker and len(all_docs) > 1:
             try:
-                reranked_docs, reranked_scores = await self._enhanced_semantic_rerank(
-                    query, all_docs, all_scores, rerank_k
-                )
-                return reranked_docs[:top_k], reranked_scores[:top_k]
+                return await self._semantic_rerank(query, all_docs, all_scores, top_k)
             except Exception as e:
-                logger.warning(f"⚠️ Enhanced reranking failed: {e}")
-
-        # ENHANCEMENT 5: Metadata-based final sorting if reranking unavailable
-        final_docs, final_scores = self._metadata_aware_sorting(query, all_docs, all_scores)
-        return final_docs[:top_k], final_scores[:top_k]
+                logger.warning(f"⚠️ Reranking failed: {e}")
+        
+        # Sort by score and return top k
+        scored_docs = list(zip(all_docs, all_scores))
+        scored_docs.sort(key=lambda x: x[1], reverse=True)
+        
+        final_docs = [doc for doc, _ in scored_docs[:top_k]]
+        final_scores = [score for _, score in scored_docs[:top_k]]
+        
+        return final_docs, final_scores
     
-    async def _enhanced_semantic_rerank(self, query: str, documents: List[Document],
-                                      initial_scores: List[float], rerank_k: int) -> Tuple[List[Document], List[float]]:
-        """Enhanced semantic reranking with metadata awareness"""
+    async def _semantic_rerank(self, query: str, documents: List[Document], scores: List[float], top_k: int) -> Tuple[List[Document], List[float]]:
+        """FIXED: Semantic reranking"""
         try:
-            global reranker
-            if reranker is None:
-                return documents, initial_scores
-            
-            # Skip reranking for small sets to improve performance
-            if len(documents) <= 3:
-                return documents, initial_scores
-            
-            # Take top candidates for reranking to manage cost/performance
-            candidates = list(zip(documents, initial_scores))
-            candidates.sort(key=lambda x: x[1], reverse=True)
-            
-            # Limit reranking to top candidates
-            rerank_candidates = candidates[:min(rerank_k, len(candidates))]
-            rerank_docs = [doc for doc, _ in rerank_candidates]
-            
-            if LOG_VERBOSE:
-                logger.info(f"🔄 Reranking {len(rerank_docs)} documents")
+            if len(documents) <= 2:  # Skip reranking for small sets
+                return documents[:top_k], scores[:top_k]
             
             # Prepare query-document pairs
-            query_doc_pairs = [[query, doc.page_content[:512]] for doc in rerank_docs]
+            pairs = [[query, doc.page_content[:512]] for doc in documents[:25]]  # Limit for efficiency
             
-            # Batch process pairs for better performance
-            rerank_scores = await asyncio.to_thread(reranker.predict, query_doc_pairs)
+            # Get reranking scores
+            rerank_scores = await asyncio.to_thread(reranker.predict, pairs)
             
-            # ENHANCEMENT: Metadata-aware score adjustment with more generous scoring
-            adjusted_scores = []
-            for i, (doc, rerank_score) in enumerate(zip(rerank_docs, rerank_scores)):
-                # Normalize rerank score to 0-1 range - more generous
-                normalized_rerank = float((rerank_score + 1) / 2)  # Convert from [-1,1] to [0,1]
-                normalized_rerank = max(0.3, normalized_rerank)  # Minimum score of 0.3
+            # Normalize and combine scores
+            normalized_rerank = [(score + 1) / 2 for score in rerank_scores]  # Convert [-1,1] to [0,1]
+            
+            combined_scores = []
+            for i, (orig_score, rerank_score) in enumerate(zip(scores[:len(normalized_rerank)], normalized_rerank)):
+                # Metadata boost
+                doc = documents[i]
+                boost = 1.0
                 
-                # Metadata-based boosting
-                metadata_boost = 1.0
-                
-                # Boost for specific section types
                 section_type = doc.metadata.get('section_type', '')
-                if section_type == 'clause':
-                    metadata_boost = 1.15
-                elif section_type in ['coverage', 'definition']:
-                    metadata_boost = 1.1
-                elif section_type == 'exclusion' and any(word in query.lower() for word in ['exclusion', 'exclude', 'not covered']):
-                    metadata_boost = 1.2
+                if section_type in ['summary', 'introduction', 'conclusion']:
+                    boost = 1.1
+                elif doc.metadata.get('chunk_type') == 'complete_section':
+                    boost = 1.05
                 
-                # Boost for complete sections
-                if doc.metadata.get('chunk_type') == 'complete_section':
-                    metadata_boost *= 1.05
-                
-                # Final score combination: 70% rerank, 30% initial score + metadata boost
-                initial_score = initial_scores[i] if i < len(initial_scores) else 0.6
-                combined_score = (0.7 * normalized_rerank + 0.3 * initial_score) * metadata_boost
-                adjusted_scores.append(min(1.0, combined_score))
+                # Combine: 70% rerank, 30% original
+                combined = (0.7 * rerank_score + 0.3 * orig_score) * boost
+                combined_scores.append(min(1.0, combined))
             
-            # Sort by adjusted score
-            scored_docs = list(zip(rerank_docs, adjusted_scores))
+            # Add remaining documents
+            if len(documents) > len(combined_scores):
+                combined_scores.extend(scores[len(combined_scores):])
+            
+            # Sort by combined score
+            scored_docs = list(zip(documents, combined_scores))
             scored_docs.sort(key=lambda x: x[1], reverse=True)
             
-            # Add remaining documents that weren't reranked
-            remaining_docs = [doc for doc, _ in candidates[len(rerank_docs):]]
-            remaining_scores = [score for _, score in candidates[len(rerank_docs):]]
-            
-            final_docs = [doc for doc, _ in scored_docs] + remaining_docs
-            final_scores = [score for _, score in scored_docs] + remaining_scores
-            
-            if LOG_VERBOSE:
-                logger.info(f"✅ Enhanced reranking complete: top score = {final_scores[0]:.3f}")
+            final_docs = [doc for doc, _ in scored_docs[:top_k]]
+            final_scores = [score for _, score in scored_docs[:top_k]]
             
             return final_docs, final_scores
             
         except Exception as e:
-            logger.warning(f"⚠️ Enhanced reranking error: {e}")
-            return documents, initial_scores
-    
-    def _metadata_aware_sorting(self, query: str, documents: List[Document],
-                              scores: List[float]) -> Tuple[List[Document], List[float]]:
-        """Sort documents using metadata when reranking is unavailable"""
-        query_lower = query.lower()
-        
-        # Calculate metadata-enhanced scores
-        enhanced_scores = []
-        for doc, score in zip(documents, scores):
-            enhanced_score = max(0.5, score)  # Minimum score boost
-            
-            # Section type boost
-            section_type = doc.metadata.get('section_type', '')
-            if section_type == 'clause':
-                enhanced_score *= 1.1
-            elif section_type in ['coverage', 'definition']:
-                enhanced_score *= 1.05
-            
-            # Query-specific boosts
-            if 'exclusion' in query_lower and section_type == 'exclusion':
-                enhanced_score *= 1.15
-            elif any(term in query_lower for term in ['coverage', 'benefit', 'covered']) and section_type == 'coverage':
-                enhanced_score *= 1.15
-            
-            enhanced_scores.append(min(1.0, enhanced_score))
-        
-        # Sort by enhanced scores
-        scored_docs = list(zip(documents, enhanced_scores))
-        scored_docs.sort(key=lambda x: x[1], reverse=True)
-        
-        sorted_docs, sorted_scores = zip(*scored_docs) if scored_docs else ([], [])
-        return list(sorted_docs), list(sorted_scores)
+            logger.error(f"❌ Semantic reranking error: {e}")
+            return documents[:top_k], scores[:top_k]
 
 # ================================
-# ENHANCED DECISION ENGINE - CONFIDENCE REMOVED
+# UNIVERSAL DECISION ENGINE (FIXED)
 # ================================
 
 class UniversalDecisionEngine:
-    """Enhanced decision engine without confidence thresholds"""
+    """FIXED: Universal decision engine for all domains"""
     
     def __init__(self):
         self.token_processor = TokenOptimizedProcessor()
-        self.processing_cache = LRUCache(maxsize=1000)
+        self.confidence_cache = LRUCache(maxsize=2000)
+        self.response_cache = LRUCache(maxsize=1000)
     
-    def _assess_query_match_quality(self, query: str, retrieved_docs: List[Document]) -> float:
-        """Assess query match quality for metadata enhancement"""
+    def calculate_confidence_score(self, query: str, similarity_scores: List[float], 
+                                 retrieved_docs: List[Document], domain_confidence: float = 1.0) -> float:
+        """FIXED: Universal confidence calculation"""
+        if not similarity_scores:
+            return 0.0
+        
+        # Cache key
+        scores_str = str(sorted(similarity_scores))
+        cache_key = hashlib.md5(f"{query}_{scores_str}_{domain_confidence}".encode()).hexdigest()[:12]
+        
+        if cache_key in self.confidence_cache:
+            return self.confidence_cache[cache_key]
+        
+        try:
+            scores_array = np.array(similarity_scores)
+            
+            # Basic metrics
+            max_score = np.max(scores_array)
+            avg_score = np.mean(scores_array)
+            score_std = np.std(scores_array)
+            
+            # Quality metrics
+            high_quality_docs = np.sum(scores_array > 0.6) / len(scores_array)
+            score_consistency = max(0.0, 1.0 - (score_std * 1.5))
+            
+            # Query-document match
+            query_match = self._calculate_query_match(query, retrieved_docs)
+            
+            # Universal confidence formula
+            confidence = (
+                0.35 * max_score +           # Best match
+                0.25 * avg_score +           # Overall quality
+                0.20 * query_match +         # Query relevance
+                0.15 * score_consistency +   # Consistency
+                0.05 * domain_confidence     # Domain confidence
+            )
+            
+            # Boost for multiple high-quality matches
+            confidence += 0.1 * high_quality_docs
+            
+            confidence = min(1.0, max(0.0, confidence))
+            self.confidence_cache[cache_key] = confidence
+            
+            return confidence
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Confidence calculation error: {e}")
+            return 0.5
+    
+    def _calculate_query_match(self, query: str, docs: List[Document]) -> float:
+        """Calculate query-document match quality"""
         query_terms = set(query.lower().split())
         if not query_terms:
-            return 0.7  # Default reasonable score
+            return 0.5
         
         match_scores = []
-        for doc in retrieved_docs[:8]:
+        for doc in docs[:5]:  # Check top 5 docs
             doc_terms = set(doc.page_content.lower().split())
             overlap = len(query_terms.intersection(doc_terms))
             match_score = overlap / len(query_terms)
             match_scores.append(match_score)
         
-        avg_match = np.mean(match_scores) if match_scores else 0.5
-        return min(1.0, max(0.3, avg_match))  # Ensure reasonable bounds
+        return np.mean(match_scores) if match_scores else 0.5
     
-    async def process_query_direct(self,
-                                 query: str,
-                                 retrieved_docs: List[Document],
-                                 similarity_scores: List[float],
-                                 domain: str,
-                                 domain_confidence: float = 1.0,
-                                 query_type: str = "general",
-                                 rag_system: 'EnhancedRAGSystem' = None) -> Dict[str, Any]:
-        """Process query directly without confidence thresholds"""
-        if not retrieved_docs:
-            return self._empty_response(query, domain)
+    async def process_query_with_fallback(self, query: str, retrieved_docs: List[Document],
+                                        similarity_scores: List[float], domain: str,
+                                        domain_confidence: float = 1.0, query_type: str = "general",
+                                        rag_system: 'EnhancedRAGSystem' = None) -> Dict[str, Any]:
+        """FIXED: Universal query processing with fallback"""
+        start_time = time.time()
         
         try:
-            # Assess query quality for metadata
-            query_match_quality = self._assess_query_match_quality(query, retrieved_docs)
+            if not retrieved_docs:
+                return self._empty_response(query, domain)
             
-            # Always process - no confidence threshold
-            if LOG_VERBOSE:
-                logger.info(f"🔄 Processing query directly with {len(retrieved_docs)} documents")
+            # Calculate confidence
+            confidence = self.calculate_confidence_score(query, similarity_scores, retrieved_docs, domain_confidence)
             
-            # Optimize context for token efficiency
+            # Get confidence threshold for domain
+            confidence_threshold = DOMAIN_CONFIGS.get(domain, UNIVERSAL_CONFIG)["confidence_threshold"]
+            
+            # Fallback logic if confidence is low
+            if confidence < confidence_threshold and rag_system:
+                logger.info(f"🔄 Low confidence ({confidence:.2f}), attempting fallback")
+                
+                fallback_result = await self._attempt_fallback(
+                    query, domain, rag_system, confidence_threshold
+                )
+                
+                if fallback_result:
+                    retrieved_docs, similarity_scores, confidence = fallback_result
+                    logger.info(f"✅ Fallback improved confidence to {confidence:.2f}")
+            
+            # Optimize context
             context = self.token_processor.optimize_context_intelligently(
                 retrieved_docs, query, max_tokens=4000
             )
             
-            # Generate response with enhanced prompting
-            response = await self._generate_enhanced_response(query, context, domain)
+            # Generate response
+            response = await self._generate_universal_response(query, context, domain, confidence)
             
-            # Calculate a relevance score for informational purposes (not used for filtering)
-            relevance_score = min(1.0, max(0.4, np.mean(similarity_scores) if similarity_scores else 0.6))
+            processing_time = time.time() - start_time
             
-            # Prepare final result
             result = {
                 "query": query,
                 "answer": response,
-                "relevance_score": relevance_score,  # Renamed from confidence
+                "confidence": confidence,
                 "domain": domain,
                 "domain_confidence": domain_confidence,
                 "query_type": query_type,
                 "reasoning_chain": [
-                    f"Enhanced retrieval: {len(retrieved_docs)} documents",
-                    f"Relevance score: {relevance_score:.1%}",
-                    f"Query match quality: {query_match_quality:.1%}",
-                    f"Context optimized with {len(context)} characters"
+                    f"Retrieved {len(retrieved_docs)} documents",
+                    f"Confidence: {confidence:.1%} (threshold: {confidence_threshold:.1%})",
+                    f"Domain: {domain} ({domain_confidence:.1%})",
+                    f"Context optimized: {len(context)} chars"
                 ],
-                "source_documents": list(set([doc.metadata.get('source', 'Unknown') for doc in retrieved_docs])),
+                "source_documents": list(set([
+                    doc.metadata.get('source', 'Unknown') for doc in retrieved_docs
+                ])),
                 "retrieved_chunks": len(retrieved_docs),
-                "processing_time": time.time(),
+                "processing_time": processing_time,
                 "enhanced_features": {
-                    "intelligent_chunking": True,
-                    "mmr_diversity": True,
-                    "enhanced_reranking": True,
-                    "metadata_aware": True,
-                    "confidence_filtering_disabled": True
+                    "universal_processing": True,
+                    "confidence_fallback": confidence < confidence_threshold,
+                    "context_optimization": True,
+                    "multi_domain_support": True
                 }
             }
             
@@ -1619,18 +1706,139 @@ class UniversalDecisionEngine:
             logger.error(f"❌ Query processing error: {e}")
             return self._error_response(query, domain, str(e))
     
+    async def _attempt_fallback(self, query: str, domain: str, rag_system: 'EnhancedRAGSystem',
+                              threshold: float) -> Optional[Tuple[List[Document], List[float], float]]:
+        """FIXED: Attempt fallback retrieval strategies"""
+        try:
+            # Strategy 1: Retrieve more documents
+            expanded_docs, expanded_scores = await rag_system.enhanced_retrieve_and_rerank(
+                query, top_k=min(25, len(rag_system.documents))
+            )
+            
+            if len(expanded_docs) > len(rag_system.documents[:rag_system.domain_config["context_docs"]]):
+                new_confidence = self.calculate_confidence_score(query, expanded_scores, expanded_docs)
+                if new_confidence > threshold * 0.9:
+                    return expanded_docs, expanded_scores, new_confidence
+            
+            # Strategy 2: Query expansion
+            expanded_query = self._expand_query(query, domain)
+            if expanded_query != query:
+                fallback_docs, fallback_scores = await rag_system.enhanced_retrieve_and_rerank(
+                    expanded_query, top_k=rag_system.domain_config["context_docs"]
+                )
+                
+                if fallback_docs:
+                    new_confidence = self.calculate_confidence_score(expanded_query, fallback_scores, fallback_docs)
+                    if new_confidence > threshold * 0.85:
+                        return fallback_docs, fallback_scores, new_confidence
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Fallback error: {e}")
+            return None
+    
+    def _expand_query(self, query: str, domain: str) -> str:
+        """Universal query expansion"""
+        query_lower = query.lower()
+        
+        # Universal expansions
+        expansions = []
+        
+        if "what" in query_lower and "is" in query_lower:
+            expansions.extend(["definition", "meaning", "explanation"])
+        elif "how" in query_lower:
+            expansions.extend(["process", "procedure", "method"])
+        elif "when" in query_lower:
+            expansions.extend(["time", "period", "duration"])
+        elif "why" in query_lower:
+            expansions.extend(["reason", "cause", "purpose"])
+        elif "where" in query_lower:
+            expansions.extend(["location", "place", "position"])
+        
+        # Domain-specific expansions
+        domain_expansions = {
+            "insurance": ["policy", "coverage", "benefit", "claim"],
+            "legal": ["law", "regulation", "clause", "agreement"],
+            "medical": ["treatment", "diagnosis", "medical", "healthcare"],
+            "financial": ["financial", "investment", "economic", "money"],
+            "technical": ["technical", "system", "process", "specification"],
+            "academic": ["research", "study", "academic", "analysis"],
+            "business": ["business", "corporate", "management", "strategy"]
+        }
+        
+        if domain in domain_expansions:
+            expansions.extend(domain_expansions[domain])
+        
+        if expansions:
+            # Add top 2 relevant expansions
+            return f"{query} {' '.join(expansions[:2])}"
+        
+        return query
+    
+    async def _generate_universal_response(self, query: str, context: str, domain: str, confidence: float) -> str:
+        """FIXED: Generate universal response for any domain"""
+        try:
+            if not openai_client:
+                return "System is still initializing. Please wait a moment and try again."
+            
+            # Universal prompt template
+            system_prompt = f"""You are an expert document analyst specializing in {domain} documents. Your task is to provide accurate, extractive answers based strictly on the provided context.
+
+CRITICAL INSTRUCTIONS:
+1. Answer ONLY based on information explicitly stated in the provided context
+2. If information is not in the context, clearly state "This information is not mentioned in the provided document"
+3. Be specific and cite relevant details when available
+4. Do not add external knowledge or make assumptions
+5. If multiple relevant sections exist, synthesize them clearly
+6. Provide confidence level based on available information
+
+CONFIDENCE GUIDANCE:
+- High confidence ({confidence:.0%}): Provide comprehensive answer
+- Moderate confidence: Be clear about limitations
+- Low confidence: Be cautious and explicit about uncertainty"""
+
+            confidence_instruction = "High confidence: Provide detailed answer" if confidence >= 0.7 else \
+                                   "Moderate confidence: Provide clear answer with noted limitations" if confidence >= 0.5 else \
+                                   "Low confidence: Be cautious and explicit about uncertainty"
+
+            user_prompt = f"""DOCUMENT CONTEXT:
+{context}
+
+QUESTION: {query}
+
+INSTRUCTIONS: {confidence_instruction}
+
+ANALYSIS AND ANSWER:"""
+
+            response = await openai_client.optimized_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                model="gpt-4o",
+                max_tokens=1500,
+                temperature=0.05  # Low temperature for consistency
+            )
+            
+            return response
+            
+        except Exception as e:
+            logger.error(f"❌ Response generation error: {e}")
+            return f"Error generating response: {str(e)}. Please try again."
+    
     def _empty_response(self, query: str, domain: str) -> Dict[str, Any]:
-        """Generate response when no documents are retrieved"""
+        """Generate response when no documents found"""
         return {
             "query": query,
             "answer": "No relevant information found in the provided documents for this query.",
-            "relevance_score": 0.0,
+            "confidence": 0.0,
             "domain": domain,
             "query_type": "no_results",
-            "reasoning_chain": ["No documents retrieved for analysis"],
+            "reasoning_chain": ["No relevant documents retrieved"],
             "source_documents": [],
             "retrieved_chunks": 0,
-            "processing_time": time.time()
+            "processing_time": 0.0
         }
     
     def _error_response(self, query: str, domain: str, error_msg: str) -> Dict[str, Any]:
@@ -1638,174 +1846,70 @@ class UniversalDecisionEngine:
         return {
             "query": query,
             "answer": f"Error processing query: {error_msg}",
-            "relevance_score": 0.0,
+            "confidence": 0.0,
             "domain": domain,
             "query_type": "error",
-            "reasoning_chain": [f"Processing error: {error_msg}"],
+            "reasoning_chain": [f"Error: {error_msg}"],
             "source_documents": [],
             "retrieved_chunks": 0,
-            "processing_time": time.time()
+            "processing_time": 0.0
         }
-    
-    async def _generate_enhanced_response(self, query: str, context: str, domain: str) -> str:
-        """Generate response with enhanced domain-specific prompting"""
-        # Enhanced prompt design for better extractive behavior
-        domain_instructions = self._get_domain_specific_instructions(domain)
-        
-        # Enhanced prompt template
-        enhanced_prompt = f"""You are an expert {domain} document analyst. Your task is to provide accurate, comprehensive answers based on the provided context.
-
-{domain_instructions}
-
-INSTRUCTIONS:
-1. Answer based on the information in the context below
-2. Be specific and detailed when relevant information is available
-3. If specific details are not in the context, provide what information is available
-4. Synthesize information from multiple relevant sections when applicable
-5. Use clear, professional language appropriate for the domain
-
-DOCUMENT CONTEXT:
-{context}
-
-QUESTION: {query}
-
-DETAILED ANSWER:"""
-        
-        try:
-            global openai_client
-            if not openai_client:
-                return "System is still initializing. Please wait a moment and try again."
-            
-            # Enhanced system message for better behavior
-            system_message = f"""You are a precise {domain} document analyst. Provide comprehensive, context-based responses. Extract and synthesize information from the provided context to give detailed, useful answers."""
-            
-            response = await openai_client.optimized_completion(
-                messages=[
-                    {"role": "system", "content": system_message},
-                    {"role": "user", "content": enhanced_prompt}
-                ],
-                model="gpt-4o",
-                max_tokens=1500,
-                temperature=0.1  # Slightly higher for more natural responses
-            )
-            
-            return response
-            
-        except Exception as e:
-            logger.error(f"❌ Enhanced LLM generation error: {e}")
-            return f"Error generating response: {str(e)}. The system may still be initializing."
-    
-    def _get_domain_specific_instructions(self, domain: str) -> str:
-        """Get domain-specific instructions for better prompting"""
-        instructions = {
-            "insurance": """
-When analyzing insurance documents, focus on:
-- Policy terms, coverage details, and benefit amounts
-- Exclusions, waiting periods, and limitations
-- Claim procedures and requirements
-- Pre-existing condition clauses
-- Premium calculations and payment terms
-- Network providers and cashless facilities
-
-Provide comprehensive answers with specific details when available.""",
-            
-            "legal": """
-When analyzing legal documents, focus on:
-- Specific clauses, sections, and articles
-- Terms, conditions, and provisions
-- Rights, obligations, and liabilities
-- Jurisdiction and governing law
-- Compliance requirements and regulations
-
-Provide detailed legal analysis with specific references when available.""",
-            
-            "medical": """
-When analyzing medical documents, focus on:
-- Diagnosis, treatment, and clinical procedures
-- Medical conditions and symptoms
-- Healthcare coverage and benefits
-- Clinical guidelines and protocols
-- Patient care instructions
-
-Provide comprehensive medical information with specific details when available.""",
-            
-            "financial": """
-When analyzing financial documents, focus on:
-- Financial terms, calculations, and formulas
-- Investment details and portfolio information
-- Risk factors and market conditions
-- Regulatory compliance and reporting
-- Performance metrics and benchmarks
-
-Provide detailed financial analysis with specific data when available.""",
-            
-            "technical": """
-When analyzing technical documents, focus on:
-- System specifications and requirements
-- Implementation details and procedures
-- Configuration settings and parameters
-- Troubleshooting and maintenance
-- Performance metrics and standards
-
-Provide comprehensive technical information with specific details when available.""",
-            
-            "academic": """
-When analyzing academic documents, focus on:
-- Research methodology and findings
-- Literature reviews and citations
-- Data analysis and conclusions
-- Theoretical frameworks and models
-- Study limitations and future research
-
-Provide detailed academic analysis with specific findings when available.""",
-            
-            "business": """
-When analyzing business documents, focus on:
-- Strategic objectives and goals
-- Operational procedures and processes
-- Performance metrics and KPIs
-- Organizational structure and roles
-- Market analysis and competitive landscape
-
-Provide comprehensive business analysis with specific details when available."""
-        }
-        
-        return instructions.get(domain, "Focus on providing accurate, comprehensive information based on the context with specific details when available.")
 
 # ================================
-# SESSION MANAGEMENT
+# SESSION MANAGEMENT (FIXED)
 # ================================
+
+T = TypeVar('T')
+
+class SessionObject(Generic[T]):
+    """FIXED: Generic session object with proper TTL management"""
+    
+    def __init__(self, session_id: str, data: T, ttl: int = SESSION_TTL):
+        self.session_id = session_id
+        self.data = data
+        self.created_at = time.time()
+        self.last_accessed = time.time()
+        self.ttl = ttl
+    
+    def is_expired(self) -> bool:
+        return (time.time() - self.last_accessed) > self.ttl
+    
+    def touch(self):
+        self.last_accessed = time.time()
+    
+    def get_data(self) -> T:
+        self.touch()
+        return self.data
 
 class EnhancedSessionManager:
-    """Enhanced session manager with generic support"""
+    """FIXED: Enhanced session manager"""
     
     @staticmethod
     async def get_or_create_session(document_hash: str) -> EnhancedRAGSystem:
-        """Get existing session or create new one"""
+        """Get existing session or create new one with proper cleanup"""
         current_time = time.time()
         
-        # Clean expired sessions efficiently
-        expired_sessions = []
-        for session_id, session_obj in list(ACTIVE_SESSIONS.items()):
-            if session_obj.is_expired():
-                expired_sessions.append(session_id)
+        # Clean expired sessions
+        expired_sessions = [
+            session_id for session_id, session_obj in ACTIVE_SESSIONS.items()
+            if session_obj.is_expired()
+        ]
         
-        # Batch cleanup
         if expired_sessions:
             cleanup_tasks = []
             for session_id in expired_sessions:
-                session_obj = ACTIVE_SESSIONS.pop(session_id)
-                cleanup_tasks.append(session_obj.get_data().cleanup())
+                session_obj = ACTIVE_SESSIONS.pop(session_id, None)
+                if session_obj:
+                    cleanup_tasks.append(session_obj.get_data().cleanup())
             
-            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-            
-            if LOG_VERBOSE:
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
                 logger.info(f"🗑️ Cleaned {len(expired_sessions)} expired sessions")
         
         # Get or create session
         if document_hash in ACTIVE_SESSIONS:
             session_obj = ACTIVE_SESSIONS[document_hash]
-            session = session_obj.get_data()  # This updates access time
+            session = session_obj.get_data()
             if LOG_VERBOSE:
                 logger.info(f"♻️ Reusing session: {document_hash}")
             return session
@@ -1821,28 +1925,37 @@ class EnhancedSessionManager:
         return rag_session
 
 # ================================
-# URL DOWNLOADER
+# UNIVERSAL URL DOWNLOADER (FIXED)
 # ================================
 
 class UniversalURLDownloader:
-    """Universal URL downloader with support for various cloud storage"""
+    """FIXED: Universal URL downloader with comprehensive blob support"""
     
-    def __init__(self, timeout: float = 60.0):
+    def __init__(self, timeout: float = 120.0):
         self.timeout = timeout
     
     async def download_from_url(self, url: str) -> Tuple[bytes, str]:
-        """Download file from URL with enhanced error handling"""
+        """FIXED: Download from any URL type with robust error handling"""
         try:
             download_url, filename = self._prepare_url_and_filename(url)
             
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (compatible; DocumentProcessor/2.0)',
+                'Accept': '*/*',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive'
+            }
+            
+            # Use longer timeout for large files
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(self.timeout),
                 follow_redirects=True,
-                headers={'User-Agent': 'Mozilla/5.0 (compatible; DocumentProcessor/2.0)'}
+                headers=headers,
+                limits=httpx.Limits(max_connections=20)
             ) as client:
                 
                 if LOG_VERBOSE:
-                    logger.info(f"📥 Downloading from: {download_url}")
+                    logger.info(f"📥 Downloading: {download_url}")
                 
                 response = await client.get(download_url)
                 response.raise_for_status()
@@ -1850,106 +1963,133 @@ class UniversalURLDownloader:
                 if not response.content:
                     raise HTTPException(status_code=400, detail="Downloaded file is empty")
                 
-                if LOG_VERBOSE:
-                    logger.info(f"✅ Downloaded {len(response.content)} bytes")
+                # Validate file type
+                content_type = response.headers.get('content-type', '').lower()
+                if content_type and not any(ct in content_type for ct in [
+                    'pdf', 'document', 'text', 'application', 'octet-stream'
+                ]):
+                    logger.warning(f"⚠️ Unexpected content type: {content_type}")
                 
+                logger.info(f"✅ Downloaded {len(response.content)} bytes as {filename}")
                 return response.content, filename
                 
         except httpx.RequestError as e:
-            logger.error(f"❌ Network error downloading from {url}: {str(e)}")
+            logger.error(f"❌ Network error: {e}")
             raise HTTPException(status_code=400, detail=f"Network error: {str(e)}")
+        
         except httpx.HTTPStatusError as e:
-            logger.error(f"❌ HTTP {e.response.status_code} error: {str(e)}")
+            logger.error(f"❌ HTTP {e.response.status_code}: {e}")
             raise HTTPException(status_code=400, detail=f"HTTP {e.response.status_code}: Download failed")
+        
         except Exception as e:
-            logger.error(f"❌ Unexpected download error: {str(e)}")
+            logger.error(f"❌ Download error: {e}")
             raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
     
     def _prepare_url_and_filename(self, url: str) -> Tuple[str, str]:
-        """Prepare URL and extract filename"""
+        """FIXED: Handle all types of URLs including Azure Blob Storage"""
         parsed_url = urlparse(url)
         
-        # Handle Google Drive URLs
-        if 'drive.google.com' in parsed_url.netloc:
+        # Azure Blob Storage (like your sample URL)
+        if 'blob.core.windows.net' in parsed_url.netloc:
+            # Extract filename from path
+            path_parts = parsed_url.path.split('/')
+            filename = path_parts[-1] if path_parts else "azure_blob_file"
+            
+            # Ensure extension
+            if '.' not in filename:
+                filename += '.pdf'
+            
+            return url, filename  # Use URL as-is for Azure blob
+        
+        # Google Drive URLs
+        elif 'drive.google.com' in parsed_url.netloc:
             if '/file/d/' in url:
                 file_id = url.split('/file/d/')[1].split('/')[0]
                 download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                filename = f"google_drive_file_{file_id}.pdf"
+                filename = f"google_drive_{file_id}.pdf"
             else:
-                raise HTTPException(status_code=400, detail="Invalid Google Drive URL format")
+                raise HTTPException(status_code=400, detail="Invalid Google Drive URL")
+            return download_url, filename
         
-        # Handle Dropbox URLs
+        # Dropbox URLs
         elif 'dropbox.com' in parsed_url.netloc:
-            download_url = url.replace('?dl=0', '?dl=1').replace('?dl=1', '?dl=1')
+            download_url = url.replace('?dl=0', '?dl=1')
             if '?dl=1' not in download_url:
                 download_url += '?dl=1'
             filename = parsed_url.path.split('/')[-1] or "dropbox_file.pdf"
+            return download_url, filename
         
-        # Handle OneDrive URLs
-        elif 'onedrive.live.com' in parsed_url.netloc or '1drv.ms' in parsed_url.netloc:
+        # OneDrive URLs
+        elif any(domain in parsed_url.netloc for domain in ['onedrive.live.com', '1drv.ms', 'sharepoint.com']):
             if '1drv.ms' in parsed_url.netloc:
-                # Handle shortened OneDrive URLs
                 download_url = url + "&download=1"
             else:
                 download_url = url.replace('view.aspx', 'download.aspx')
             filename = "onedrive_file.pdf"
+            return download_url, filename
         
-        # Handle direct URLs
+        # AWS S3 URLs
+        elif 's3.amazonaws.com' in parsed_url.netloc or 's3-' in parsed_url.netloc:
+            filename = parsed_url.path.split('/')[-1] or "s3_file.pdf"
+            return url, filename
+        
+        # Generic URLs
         else:
-            download_url = url
-            filename = parsed_url.path.split('/')[-1] or "downloaded_file.pdf"
-        
-        # Ensure filename has extension
-        if '.' not in filename:
-            filename += '.pdf'
-        
-        return download_url, filename
+            filename = parsed_url.path.split('/')[-1] or "downloaded_file"
+            
+            # Ensure extension
+            if '.' not in filename:
+                filename += '.pdf'
+            
+            return url, filename
 
 # ================================
-# GLOBAL INSTANCES
+# GLOBAL INSTANCES (FIXED)
 # ================================
 
+# Initialize global instances
 REDIS_CACHE = RedisCache()
 EMBEDDING_SERVICE = OptimizedEmbeddingService()
 DECISION_ENGINE = UniversalDecisionEngine()
+DOMAIN_DETECTOR = UniversalDomainDetector()
 
 # ================================
-# FASTAPI APPLICATION SETUP
+# FASTAPI APPLICATION (FIXED)
 # ================================
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Enhanced application lifespan manager"""
-    logger.info("🚀 Starting Enhanced RAG System...")
+    """FIXED: Application lifespan manager"""
+    logger.info("🚀 Starting Enhanced Universal RAG System...")
     
-    # Initialize components
-    await initialize_components()
-    
-    yield
-    
-    # Cleanup
-    logger.info("🛑 Shutting down Enhanced RAG System...")
     try:
-        # Cleanup active sessions
-        cleanup_tasks = []
-        for session_obj in ACTIVE_SESSIONS.values():
-            cleanup_tasks.append(session_obj.get_data().cleanup())
-        
-        if cleanup_tasks:
-            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-        
-        # Clear Redis cache
-        await REDIS_CACHE.clear_cache()
-        
-        logger.info("✅ Cleanup completed")
-    except Exception as e:
-        logger.error(f"❌ Cleanup error: {e}")
+        # Initialize components
+        await initialize_components()
+        yield
+    finally:
+        # Cleanup on shutdown
+        logger.info("🛑 Shutting down...")
+        try:
+            cleanup_tasks = []
+            for session_obj in ACTIVE_SESSIONS.values():
+                cleanup_tasks.append(session_obj.get_data().cleanup())
+            
+            if cleanup_tasks:
+                await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            
+            # Clear caches
+            EMBEDDING_CACHE.clear()
+            RESPONSE_CACHE.clear()
+            
+            logger.info("✅ Cleanup completed")
+        except Exception as e:
+            logger.error(f"❌ Cleanup error: {e}")
 
 # Create FastAPI app
 app = FastAPI(
-    title="Enhanced RAG System",
-    description="Production-ready RAG system with intelligent chunking, MMR diversity, enhanced retrieval, and multi-domain support - Confidence filtering disabled",
-    version="2.1.0",
+    title="Enhanced Universal RAG System",
+    description="Production-ready RAG system with universal document support, intelligent chunking, and multi-domain processing",
+    version="3.0.0",
     lifespan=lifespan
 )
 
@@ -1963,24 +2103,13 @@ app.add_middleware(
 )
 
 # ================================
-# PYDANTIC MODELS
+# PYDANTIC MODELS (UPDATED)
 # ================================
 
 class HackRxRunRequest(BaseModel):
-    """Request model for HackRx run endpoint"""
+    """FIXED: Request model for HackRx run endpoint"""
     documents: str = Field(..., description="Document URL to process")
     questions: List[str] = Field(..., description="List of questions to ask")
-
-class HackRxQuestionAnswer(BaseModel):
-    """Individual question-answer pair"""
-    question: str
-    answer: str
-    relevance_score: float  # Renamed from confidence
-    reasoning_chain: List[str]
-
-class HackRxRunResponse(BaseModel):
-    """Response model for HackRx run endpoint"""
-    answers: List[str]
 
 class ProcessDocumentsRequest(BaseModel):
     """Request model for document processing"""
@@ -1988,43 +2117,14 @@ class ProcessDocumentsRequest(BaseModel):
     domain_override: Optional[str] = Field(None, description="Override domain detection")
     session_id: Optional[str] = Field(None, description="Reuse existing session")
 
-class ProcessDocumentsResponse(BaseModel):
-    """Response model for document processing"""
-    session_id: str
-    document_hash: str
-    domain: str
-    domain_confidence: float
-    total_chunks: int
-    processed_files: List[str]
-    chunk_size: int
-    chunk_overlap: int
-    enhanced_features: Dict[str, bool]
-    processing_time: float
-    status: str
-
 class QueryRequest(BaseModel):
     """Request model for queries"""
     query: str = Field(..., description="Question to ask")
     session_id: str = Field(..., description="Session ID from document processing")
     query_type: Optional[str] = Field("general", description="Type of query")
 
-class QueryResponse(BaseModel):
-    """Response model for queries"""
-    query: str
-    answer: str
-    relevance_score: float  # Renamed from confidence
-    domain: str
-    domain_confidence: float
-    query_type: str
-    reasoning_chain: List[str]
-    source_documents: List[str]
-    retrieved_chunks: int
-    processing_time: float
-    enhanced_features: Dict[str, Any]
-    status: str
-
+# Response models
 class HealthResponse(BaseModel):
-    """Health check response"""
     status: str
     timestamp: str
     components: Dict[str, str]
@@ -2032,33 +2132,28 @@ class HealthResponse(BaseModel):
     active_sessions: int
 
 # ================================
-# API ENDPOINTS
+# API ENDPOINTS (FIXED)
 # ================================
 
-@app.get("/", response_model=Dict[str, str])
+@app.get("/")
 async def root():
-    """Root endpoint with system information"""
+    """Root endpoint"""
     return {
-        "service": "Enhanced RAG System",
-        "version": "2.1.0",
+        "service": "Enhanced Universal RAG System",
+        "version": "3.0.0",
         "status": "operational",
-        "features": "intelligent-chunking,mmr-diversity,enhanced-retrieval,multi-domain,confidence-filtering-disabled",
+        "features": "universal-documents,intelligent-chunking,multi-domain,confidence-fallbacks",
         "timestamp": datetime.now().isoformat()
     }
 
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
-    """Enhanced health check endpoint"""
+    """FIXED: Comprehensive health check"""
     try:
         # Check component status
-        components = {
-            "embedding_model": "loaded" if embedding_model else "loading",
-            "openai_client": "ready" if openai_client else "not_initialized",
-            "redis_cache": "connected" if REDIS_CACHE.redis else "fallback",
-            "pinecone": "connected" if pinecone_index else "not_connected",
-            "reranker": "loaded" if reranker else "loading",
-            "base_model": "loaded" if base_sentence_model else "loading"
-        }
+        components = {}
+        for comp, ready in components_ready.items():
+            components[comp] = "ready" if ready else "loading"
         
         # Memory usage
         memory = psutil.virtual_memory()
@@ -2069,10 +2164,8 @@ async def health_check():
         }
         
         # Overall status
-        critical_components = ["openai_client"]
-        status = "healthy"
-        if any(components.get(comp) == "not_initialized" for comp in critical_components):
-            status = "degraded"
+        critical_ready = components_ready.get("openai_client", False)
+        status = "healthy" if critical_ready else "initializing"
         
         return HealthResponse(
             status=status,
@@ -2092,404 +2185,333 @@ async def health_check():
             active_sessions=0
         )
 
-@app.post("/process-documents", response_model=ProcessDocumentsResponse)
-async def process_documents(request: ProcessDocumentsRequest):
-    """Enhanced document processing endpoint"""
+# ================================
+# MAIN HACKRX ENDPOINT (FIXED)
+# ================================
+
+@app.post("/hackrx/run", dependencies=[Depends(verify_token)])
+async def hackrx_run(request: HackRxRunRequest):
+    """FIXED: HackRx endpoint with proper response format"""
     start_time = time.time()
     temp_files = []
+    
     try:
-        if not request.file_urls:
-            raise HTTPException(status_code=400, detail="No file URLs provided")
+        # Ensure components are ready
+        await ensure_components_ready()
         
-        if LOG_VERBOSE:
-            logger.info(f"📄 Processing {len(request.file_urls)} documents")
+        if not request.documents.strip():
+            raise HTTPException(status_code=400, detail="Document URL cannot be empty")
+        
+        if not request.questions:
+            raise HTTPException(status_code=400, detail="No questions provided")
+        
+        logger.info(f"🚀 HackRx: Processing document and {len(request.questions)} questions")
+        
+        # Download document
+        downloader = UniversalURLDownloader()
+        try:
+            content, filename = await downloader.download_from_url(request.documents)
+            
+            # Save to temporary file
+            temp_file = tempfile.NamedTemporaryFile(
+                delete=False,
+                suffix=os.path.splitext(filename)[1] or '.pdf'
+            )
+            temp_file.write(content)
+            temp_file.close()
+            temp_files.append(temp_file.name)
+            
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Failed to download document: {str(e)}")
+        
+        # Create RAG session
+        rag_session = EnhancedRAGSystem()
+        
+        try:
+            processing_result = await rag_session.process_documents([temp_file.name])
+            logger.info(f"✅ Document processed: {processing_result['total_chunks']} chunks, domain: {processing_result['domain']}")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
+        
+        # Process questions in controlled parallel batches
+        async def process_single_question(question: str) -> str:
+            """Process a single question and return answer"""
+            try:
+                # Retrieve relevant documents
+                retrieved_docs, similarity_scores = await rag_session.enhanced_retrieve_and_rerank(
+                    question, 
+                    top_k=rag_session.domain_config["context_docs"]
+                )
+                
+                # Process with decision engine
+                result = await DECISION_ENGINE.process_query_with_fallback(
+                    query=question,
+                    retrieved_docs=retrieved_docs,
+                    similarity_scores=similarity_scores,
+                    domain=processing_result['domain'],
+                    domain_confidence=processing_result['domain_confidence'],
+                    query_type="hackrx",
+                    rag_system=rag_session
+                )
+                
+                return result["answer"]
+                
+            except Exception as e:
+                logger.error(f"❌ Question processing error: {e}")
+                return f"Error processing question: {str(e)}"
+        
+        # Process questions with controlled concurrency
+        semaphore = asyncio.Semaphore(3)  # Limit to 3 concurrent questions
+        
+        async def process_with_semaphore(question: str) -> str:
+            async with semaphore:
+                return await process_single_question(question)
+        
+        # Execute all questions
+        logger.info(f"🔄 Processing {len(request.questions)} questions...")
+        
+        try:
+            # Process questions in parallel with timeout
+            question_tasks = [process_with_semaphore(q) for q in request.questions]
+            answers = await asyncio.wait_for(
+                asyncio.gather(*question_tasks),
+                timeout=25.0  # 25 second timeout for all questions
+            )
+            
+        except asyncio.TimeoutError:
+            logger.error("❌ Questions processing timed out")
+            raise HTTPException(status_code=408, detail="Processing timeout - questions took too long")
+        
+        except Exception as e:
+            logger.error(f"❌ Error processing questions: {e}")
+            raise HTTPException(status_code=500, detail=f"Question processing failed: {str(e)}")
+        
+        # Cleanup session
+        await rag_session.cleanup()
+        
+        processing_time = time.time() - start_time
+        logger.info(f"✅ HackRx completed in {processing_time:.2f}s")
+        
+        # CRITICAL: Return in the exact format expected by the platform
+        return {"answers": answers}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"❌ HackRx endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=f"System error: {str(e)}")
+    
+    finally:
+        # Clean up temporary files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except Exception as e:
+                logger.warning(f"⚠️ Failed to delete temp file {temp_file}: {e}")
+
+# ================================
+# ADDITIONAL ENDPOINTS (OPTIONAL)
+# ================================
+
+@app.post("/process-documents")
+async def process_documents_endpoint(request: ProcessDocumentsRequest):
+    """Process documents endpoint"""
+    try:
+        await ensure_components_ready()
         
         # Download files
+        temp_files = []
         downloader = UniversalURLDownloader()
-        downloaded_files = []
         
         for url in request.file_urls:
             try:
                 content, filename = await downloader.download_from_url(str(url))
-                
-                # Save to temporary file
                 temp_file = tempfile.NamedTemporaryFile(
                     delete=False,
-                    suffix=os.path.splitext(filename)[1]
+                    suffix=os.path.splitext(filename)[1] or '.pdf'
                 )
                 temp_file.write(content)
                 temp_file.close()
-                
                 temp_files.append(temp_file.name)
-                downloaded_files.append(filename)
-                
             except Exception as e:
                 logger.warning(f"⚠️ Failed to download {url}: {e}")
-                continue
         
         if not temp_files:
             raise HTTPException(status_code=400, detail="No files could be downloaded")
         
-        # Get or create session
-        if request.session_id:
-            try:
-                rag_system = await EnhancedSessionManager.get_or_create_session(request.session_id)
-            except Exception as e:
-                logger.warning(f"⚠️ Could not reuse session {request.session_id}: {e}")
-                rag_system = EnhancedRAGSystem()
-        else:
-            rag_system = EnhancedRAGSystem()
-        
         # Process documents
-        result = await rag_system.process_documents(temp_files)
+        if request.session_id:
+            document_hash = request.session_id
+        else:
+            # Generate hash from URLs
+            urls_str = "".join([str(url) for url in request.file_urls])
+            document_hash = hashlib.md5(urls_str.encode()).hexdigest()[:16]
         
-        # Override domain if specified
-        if request.domain_override and request.domain_override in DOMAIN_CONFIGS:
-            rag_system.domain = request.domain_override
-            rag_system.domain_config = DOMAIN_CONFIGS[request.domain_override].copy()
-            result['domain'] = request.domain_override
-            result['domain_override'] = True
+        rag_session = await EnhancedSessionManager.get_or_create_session(document_hash)
         
-        # Store session
-        session_obj = SessionObject(result['session_id'], rag_system)
-        ACTIVE_SESSIONS[result['session_id']] = session_obj
+        try:
+            result = await rag_session.process_documents(temp_files)
+            return result
+        finally:
+            # Clean up temp files
+            for temp_file in temp_files:
+                try:
+                    if os.path.exists(temp_file):
+                        os.unlink(temp_file)
+                except Exception:
+                    pass
         
-        processing_time = time.time() - start_time
-        
-        return ProcessDocumentsResponse(
-            session_id=result['session_id'],
-            document_hash=result['document_hash'],
-            domain=result['domain'],
-            domain_confidence=result['domain_confidence'],
-            total_chunks=result['total_chunks'],
-            processed_files=downloaded_files,
-            chunk_size=result['chunk_size'],
-            chunk_overlap=result['chunk_overlap'],
-            enhanced_features=result['enhanced_features'],
-            processing_time=processing_time,
-            status="success"
-        )
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"❌ Document processing error: {e}")
+        logger.error(f"❌ Process documents error: {e}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
-    finally:
-        # Cleanup temporary files
-        for temp_file in temp_files:
-            try:
-                os.unlink(temp_file)
-            except Exception as e:
-                logger.warning(f"⚠️ Could not delete temp file {temp_file}: {e}")
 
-@app.post("/query", response_model=QueryResponse)
-async def query_documents(request: QueryRequest):
-    """Enhanced query processing endpoint"""
-    start_time = time.time()
+@app.post("/query")
+async def query_endpoint(request: QueryRequest):
+    """Query documents endpoint"""
     try:
-        if not request.query.strip():
-            raise HTTPException(status_code=400, detail="Query cannot be empty")
+        await ensure_components_ready()
         
-        # Get session
         if request.session_id not in ACTIVE_SESSIONS:
-            raise HTTPException(status_code=404, detail="Session not found. Please process documents first.")
+            raise HTTPException(status_code=404, detail="Session not found")
         
         session_obj = ACTIVE_SESSIONS[request.session_id]
-        if session_obj.is_expired():
-            del ACTIVE_SESSIONS[request.session_id]
-            raise HTTPException(status_code=404, detail="Session expired. Please process documents again.")
+        rag_session = session_obj.get_data()
         
-        rag_system = session_obj.get_data()
-        
-        if LOG_VERBOSE:
-            logger.info(f"❓ Processing query: {request.query[:100]}...")
-        
-        # Retrieve relevant documents
-        retrieved_docs, similarity_scores = await rag_system.enhanced_retrieve_and_rerank(
+        # Retrieve documents
+        retrieved_docs, similarity_scores = await rag_session.enhanced_retrieve_and_rerank(
             request.query,
-            top_k=rag_system.domain_config["context_docs"]
+            top_k=rag_session.domain_config["context_docs"]
         )
         
-        if LOG_VERBOSE:
-            logger.info(f"📚 Retrieved {len(retrieved_docs)} documents with scores: {similarity_scores[:3] if similarity_scores else []}")
-        
-        # Process query without confidence filtering
-        result = await DECISION_ENGINE.process_query_direct(
+        # Process query
+        result = await DECISION_ENGINE.process_query_with_fallback(
             query=request.query,
             retrieved_docs=retrieved_docs,
             similarity_scores=similarity_scores,
-            domain=rag_system.domain,
-            domain_confidence=getattr(rag_system, 'domain_confidence', 1.0),
+            domain=rag_session.domain,
+            domain_confidence=0.8,
             query_type=request.query_type,
-            rag_system=rag_system
+            rag_system=rag_session
         )
         
-        processing_time = time.time() - start_time
-        result['processing_time'] = processing_time
+        return result
         
-        return QueryResponse(
-            query=result['query'],
-            answer=result['answer'],
-            relevance_score=result['relevance_score'],
-            domain=result['domain'],
-            domain_confidence=result.get('domain_confidence', 1.0),
-            query_type=result['query_type'],
-            reasoning_chain=result['reasoning_chain'],
-            source_documents=result['source_documents'],
-            retrieved_chunks=result['retrieved_chunks'],
-            processing_time=processing_time,
-            enhanced_features=result.get('enhanced_features', {}),
-            status="success"
-        )
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"❌ Query processing error: {e}")
-        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+        logger.error(f"❌ Query error: {e}")
+        raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
 
-@app.post("/hackrx/run", response_model=HackRxRunResponse)
-async def hackrx_run(request: HackRxRunRequest):
-    """HackRx competition endpoint - optimized for batch processing"""
-    start_time = time.time()
-    try:
-        if not request.questions:
-            raise HTTPException(status_code=400, detail="No questions provided")
-
-        if LOG_VERBOSE:
-            logger.info(f"🏁 HackRx run: Processing {len(request.questions)} questions")
-
-        # Process document
-        doc_request = ProcessDocumentsRequest(file_urls=[request.documents])
-        doc_response = await process_documents(doc_request)
-        session_id = doc_response.session_id
-
-        # Process all questions
-        answers = []  # Simple list of answers as expected by the format
-        
-        for i, question in enumerate(request.questions):
-            try:
-                if LOG_VERBOSE:
-                    logger.info(f"❓ Processing question {i+1}/{len(request.questions)}: {question[:50]}...")
-
-                query_request = QueryRequest(
-                    query=question,
-                    session_id=session_id,
-                    query_type="hackrx"
-                )
-
-                query_response = await query_documents(query_request)
-                
-                # Just append the answer string as expected
-                answers.append(query_response.answer)
-
-            except Exception as e:
-                logger.warning(f"⚠️ Error processing question {i+1}: {e}")
-                answers.append(f"Error processing question: {str(e)}")
-
-        processing_time = time.time() - start_time
-
-        # Return in the expected format
-        return {
-            "answers": answers
-        }
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ HackRx run error: {e}")
-        raise HTTPException(status_code=500, detail=f"HackRx run failed: {str(e)}")
-
-@app.get("/sessions", response_model=Dict[str, Any])
+@app.get("/sessions")
 async def list_sessions():
-    """List active sessions with details"""
-    try:
-        sessions_info = {}
-        current_time = time.time()
-        
-        for session_id, session_obj in ACTIVE_SESSIONS.items():
-            rag_system = session_obj.data
-            sessions_info[session_id] = {
-                "created_at": datetime.fromtimestamp(session_obj.created_at).isoformat(),
-                "last_accessed": datetime.fromtimestamp(session_obj.last_accessed).isoformat(),
-                "age_seconds": current_time - session_obj.created_at,
-                "time_since_access": current_time - session_obj.last_accessed,
-                "is_expired": session_obj.is_expired(),
-                "domain": rag_system.domain,
-                "document_count": len(rag_system.documents),
-                "processed_files": rag_system.processed_files
-            }
-        
-        return {
-            "total_sessions": len(sessions_info),
-            "sessions": sessions_info,
-            "timestamp": datetime.now().isoformat()
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Error listing sessions: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(e)}")
+    """List active sessions"""
+    sessions = []
+    for session_id, session_obj in ACTIVE_SESSIONS.items():
+        sessions.append({
+            "session_id": session_id,
+            "created_at": session_obj.created_at,
+            "last_accessed": session_obj.last_accessed,
+            "expires_in": session_obj.ttl - (time.time() - session_obj.last_accessed)
+        })
+    
+    return {"active_sessions": len(sessions), "sessions": sessions}
 
 @app.delete("/sessions/{session_id}")
 async def delete_session(session_id: str):
-    """Delete specific session"""
-    try:
-        if session_id not in ACTIVE_SESSIONS:
-            raise HTTPException(status_code=404, detail="Session not found")
-        
+    """Delete a specific session"""
+    if session_id in ACTIVE_SESSIONS:
         session_obj = ACTIVE_SESSIONS.pop(session_id)
         await session_obj.get_data().cleanup()
-        
-        return {"message": f"Session {session_id} deleted successfully"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Error deleting session {session_id}: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete session: {str(e)}")
+        return {"message": f"Session {session_id} deleted"}
+    else:
+        raise HTTPException(status_code=404, detail="Session not found")
 
-@app.delete("/sessions")
-async def clear_all_sessions():
-    """Clear all active sessions"""
+@app.get("/status")
+async def system_status():
+    """Detailed system status"""
     try:
-        cleanup_tasks = []
-        session_count = len(ACTIVE_SESSIONS)
-        
-        for session_obj in ACTIVE_SESSIONS.values():
-            cleanup_tasks.append(session_obj.get_data().cleanup())
-        
-        if cleanup_tasks:
-            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-        
-        ACTIVE_SESSIONS.clear()
-        
-        # Clear caches
-        EMBEDDING_CACHE.clear()
-        RESPONSE_CACHE.clear()
-        await REDIS_CACHE.clear_cache()
-        
-        return {
-            "message": f"All {session_count} sessions cleared successfully",
-            "cleared_sessions": session_count
-        }
-        
-    except Exception as e:
-        logger.error(f"❌ Error clearing sessions: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to clear sessions: {str(e)}")
-
-@app.get("/stats", response_model=Dict[str, Any])
-async def get_system_stats():
-    """Get comprehensive system statistics"""
-    try:
-        # Memory usage
         memory = psutil.virtual_memory()
         
-        # Cache statistics
-        cache_stats = {
-            "embedding_cache_size": len(EMBEDDING_CACHE),
-            "response_cache_size": len(RESPONSE_CACHE),
-            "embedding_cache_hits": getattr(EMBEDDING_CACHE, 'hits', 0),
-            "embedding_cache_misses": getattr(EMBEDDING_CACHE, 'misses', 0),
-            "response_cache_hits": getattr(RESPONSE_CACHE, 'hits', 0),
-            "response_cache_misses": getattr(RESPONSE_CACHE, 'misses', 0)
-        }
-        
-        # Component status
-        components = {
-            "embedding_model": bool(embedding_model),
-            "base_sentence_model": bool(base_sentence_model),
-            "reranker": bool(reranker),
-            "openai_client": bool(openai_client),
-            "pinecone_index": bool(pinecone_index),
-            "redis_cache": bool(REDIS_CACHE.redis)
-        }
-        
-        # Session statistics
-        session_stats = {
-            "total_sessions": len(ACTIVE_SESSIONS),
-            "expired_sessions": sum(1 for s in ACTIVE_SESSIONS.values() if s.is_expired()),
-            "domains_in_use": list(set(s.data.domain for s in ACTIVE_SESSIONS.values())),
-            "total_documents": sum(len(s.data.documents) for s in ACTIVE_SESSIONS.values())
-        }
-        
         return {
+            "system": "Enhanced Universal RAG System",
+            "version": "3.0.0",
+            "status": "operational",
             "timestamp": datetime.now().isoformat(),
-            "system_info": {
-                "memory_total_gb": memory.total / (1024**3),
-                "memory_used_gb": (memory.total - memory.available) / (1024**3),
-                "memory_percent": memory.percent,
-                "cpu_count": psutil.cpu_count()
+            "components": {
+                "openai_client": components_ready.get("openai_client", False),
+                "embedding_model": components_ready.get("embedding_model", False),
+                "base_sentence_model": components_ready.get("base_sentence_model", False),
+                "reranker": components_ready.get("reranker", False),
+                "pinecone": components_ready.get("pinecone", False),
+                "redis": components_ready.get("redis", False)
             },
-            "cache_stats": cache_stats,
-            "components": components,
-            "session_stats": session_stats,
-            "features": {
-                "confidence_filtering": False,
-                "intelligent_chunking": True,
-                "mmr_diversity": True,
-                "enhanced_retrieval": True,
-                "multi_domain_support": True,
-                "batch_processing": True
+            "performance": {
+                "active_sessions": len(ACTIVE_SESSIONS),
+                "embedding_cache_size": len(EMBEDDING_CACHE),
+                "response_cache_size": len(RESPONSE_CACHE),
+                "memory_usage_percent": memory.percent,
+                "available_memory_gb": memory.available / (1024**3)
+            },
+            "configuration": {
+                "max_sessions": 100,
+                "session_ttl_minutes": SESSION_TTL // 60,
+                "supported_domains": list(DOMAIN_CONFIGS.keys()),
+                "supported_file_types": ["pdf", "docx", "doc", "txt", "md", "csv"]
             }
         }
-        
     except Exception as e:
-        logger.error(f"❌ Error getting stats: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to get stats: {str(e)}")
+        return {"error": str(e), "status": "error"}
 
 # ================================
 # ERROR HANDLERS
 # ================================
 
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """Handle HTTP exceptions"""
+    logger.error(f"HTTP {exc.status_code}: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail, "status_code": exc.status_code}
+    )
+
 @app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    """Global exception handler for unhandled errors"""
-    logger.error(f"❌ Unhandled exception: {exc}", exc_info=True)
+async def general_exception_handler(request: Request, exc: Exception):
+    """Handle general exceptions"""
+    error_id = str(uuid.uuid4())[:8]
+    logger.error(f"Unhandled exception {error_id}: {str(exc)}\n{traceback.format_exc()}")
+    
     return JSONResponse(
         status_code=500,
         content={
             "error": "Internal server error",
-            "message": str(exc),
-            "type": type(exc).__name__,
-            "timestamp": datetime.now().isoformat()
-        }
-    )
-
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """Handler for HTTP exceptions"""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": exc.detail,
-            "status_code": exc.status_code,
-            "timestamp": datetime.now().isoformat()
+            "error_id": error_id,
+            "message": "Please contact support with this error ID"
         }
     )
 
 # ================================
-# MAIN ENTRY POINT
+# DEVELOPMENT SERVER
 # ================================
 
 if __name__ == "__main__":
     import uvicorn
     
-    # Configuration for different environments
-    port = int(os.getenv("PORT", 8080))  # Cloud Run uses PORT env var
-    host = os.getenv("HOST", "0.0.0.0")
+    # Configuration for development
+    config = {
+        "host": "0.0.0.0",
+        "port": int(os.getenv("PORT", 8000)),
+        "workers": 1,  # Single worker for development
+        "loop": "asyncio",
+        "log_level": "info",
+        "access_log": True,
+        "reload": os.getenv("RELOAD", "false").lower() == "true"
+    }
     
-    logger.info(f"🚀 Starting Enhanced RAG System on {host}:{port}")
+    logger.info(f"🚀 Starting Enhanced Universal RAG System on {config['host']}:{config['port']}")
     
-    uvicorn.run(
-        "main:app",
-        host=host,
-        port=port,
-        log_level="info",
-        access_log=True,
-        reload=False,  # Disable reload in production
-        workers=1,  # Single worker for Cloud Run
-        timeout_keep_alive=60,
-        timeout_graceful_shutdown=30
-    )
-
+    try:
+        uvicorn.run("__main__:app", **config)
+    except KeyboardInterrupt:
+        logger.info("👋 Server shutdown requested")
+    except Exception as e:
+        logger.error(f"❌ Server error: {e}")
