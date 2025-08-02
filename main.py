@@ -19,6 +19,7 @@ import re
 from datetime import datetime, timedelta
 from functools import lru_cache
 from collections import defaultdict
+from urllib.parse import urlparse, parse_qs
 
 # Core libraries
 import pandas as pd
@@ -51,9 +52,7 @@ from openai import AsyncOpenAI
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+    handlers=[logging.StreamHandler(sys.stdout)]
 )
 
 logger = logging.getLogger(__name__)
@@ -71,7 +70,7 @@ CACHE_TTL = 1800  # 30 minutes
 
 # FIXED: Document cache with TTL and size management
 DOCUMENT_CACHE = {}
-CACHE_TTL_HOURS = timedelta(hours=2) # 2 hour TTL
+CACHE_TTL_HOURS = timedelta(hours=2)  # 2 hour TTL
 _cache_lock = asyncio.Lock()
 
 # ENHANCED: Persistent directory for vector store
@@ -79,7 +78,7 @@ PERSISTENT_CHROMA_DIR = "/tmp/persistent_chroma"
 
 # FIXED: Proper cache management with TTL
 MAX_CACHE_SIZE = 10
-CACHE_CLEANUP_INTERVAL = 300 # 5 minutes
+CACHE_CLEANUP_INTERVAL = 300  # 5 minutes
 
 # ENHANCED: Domain-adaptive document processing settings
 DOMAIN_CONFIG = {
@@ -201,6 +200,214 @@ def verify_bearer_token(credentials: HTTPAuthorizationCredentials = Depends(secu
             headers={"WWW-Authenticate": "Bearer"},
         )
     return credentials.credentials
+
+# ENHANCED: URL Downloader with support for various cloud storage services
+class URLDownloader:
+    """Enhanced URL downloader with support for multiple cloud storage services."""
+    
+    def __init__(self, timeout: float = 60.0):
+        self.timeout = timeout
+        
+    async def download_from_url(self, url: str) -> Tuple[bytes, str]:
+        """Download file from URL with support for various cloud storage services."""
+        try:
+            # Normalize and convert URL for different services
+            download_url, filename = self._prepare_url_and_filename(url)
+            
+            # Create HTTP client with appropriate configuration
+            client_config = httpx.AsyncClient(
+                timeout=httpx.Timeout(self.timeout),
+                follow_redirects=True,
+                limits=httpx.Limits(max_redirects=10),
+                headers={
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                }
+            )
+            
+            async with client_config as client:
+                logger.info(f"📥 Downloading from: {download_url}")
+                
+                # Handle different download strategies
+                if 'drive.google.com' in download_url:
+                    content = await self._download_google_drive(client, download_url)
+                elif 'dropbox.com' in download_url:
+                    content = await self._download_dropbox(client, download_url)
+                elif any(service in download_url.lower() for service in ['blob.core.windows.net', 's3.amazonaws.com', 'storage.googleapis.com']):
+                    content = await self._download_cloud_storage(client, download_url)
+                else:
+                    content = await self._download_direct(client, download_url)
+                
+                if not content:
+                    raise HTTPException(status_code=400, detail="Downloaded file is empty")
+                
+                logger.info(f"✅ Successfully downloaded {len(content)} bytes")
+                return content, filename
+                
+        except httpx.RequestError as e:
+            logger.error(f"❌ Network error downloading from {url}: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"Failed to download document from URL: {str(e)}")
+        except httpx.HTTPStatusError as e:
+            logger.error(f"❌ HTTP error {e.response.status_code} downloading from {url}: {str(e)}")
+            raise HTTPException(status_code=400, detail=f"HTTP {e.response.status_code}: Failed to download document")
+        except Exception as e:
+            logger.error(f"❌ Unexpected error downloading from {url}: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Unexpected error downloading document: {str(e)}")
+    
+    def _prepare_url_and_filename(self, url: str) -> Tuple[str, str]:
+        """Prepare download URL and extract filename for different services."""
+        original_url = url
+        filename = "document.pdf"  # default
+        
+        try:
+            # Parse URL
+            parsed = urlparse(url)
+            
+            # Google Drive URL handling
+            if 'drive.google.com' in url:
+                # Extract file ID from various Google Drive URL formats
+                if '/file/d/' in url:
+                    file_id = url.split('/file/d/')[1].split('/')[0]
+                elif 'id=' in url:
+                    file_id = parse_qs(parsed.query).get('id', [None])[0]
+                elif '/open?id=' in url:
+                    file_id = url.split('/open?id=')[1].split('&')[0]
+                else:
+                    # Try to extract from any part of URL
+                    import re
+                    match = re.search(r'[a-zA-Z0-9_-]{25,}', url)
+                    file_id = match.group(0) if match else None
+                
+                if file_id:
+                    download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+                    filename = f"gdrive_{file_id}.pdf"
+                    logger.info(f"🔄 Converted Google Drive URL: {file_id}")
+                else:
+                    raise ValueError("Could not extract Google Drive file ID")
+            
+            # Dropbox URL handling
+            elif 'dropbox.com' in url:
+                if '?dl=0' in url:
+                    download_url = url.replace('?dl=0', '?dl=1')
+                elif '?dl=1' not in url:
+                    download_url = url + ('&dl=1' if '?' in url else '?dl=1')
+                else:
+                    download_url = url
+                
+                # Extract filename from Dropbox URL
+                path_parts = parsed.path.split('/')
+                if path_parts:
+                    filename = path_parts[-1] or "dropbox_document.pdf"
+                logger.info(f"🔄 Converted Dropbox URL")
+            
+            # OneDrive URL handling
+            elif 'onedrive' in url.lower() or '1drv.ms' in url:
+                if '1drv.ms' in url:
+                    # Short URL - need to follow redirect first
+                    download_url = url
+                    filename = "onedrive_document.pdf"
+                else:
+                    # Direct OneDrive URL - convert to download link
+                    if 'sharepoint.com' in url:
+                        download_url = url.replace('sharepoint.com/:b:', 'sharepoint.com/:b:/g/personal/').replace('?e=', '&download=1&e=')
+                    else:
+                        download_url = url
+                    filename = "onedrive_document.pdf"
+                logger.info(f"🔄 Handling OneDrive URL")
+            
+            # Cloud storage (AWS S3, Google Cloud Storage, Azure Blob)
+            elif any(service in url.lower() for service in ['s3.amazonaws.com', 'storage.googleapis.com', 'blob.core.windows.net']):
+                download_url = url
+                path_parts = parsed.path.split('/')
+                filename = path_parts[-1] if path_parts and path_parts[-1] else "cloud_document.pdf"
+                logger.info(f"🔄 Handling cloud storage URL")
+            
+            # Direct file URLs
+            else:
+                download_url = url
+                path_parts = parsed.path.split('/')
+                potential_filename = path_parts[-1] if path_parts else ""
+                
+                # Check if it looks like a filename
+                if potential_filename and '.' in potential_filename:
+                    filename = potential_filename
+                else:
+                    filename = "document.pdf"
+                logger.info(f"🔄 Handling direct URL")
+            
+            return download_url, filename
+            
+        except Exception as e:
+            logger.warning(f"⚠️ Error preparing URL, using original: {str(e)}")
+            return original_url, filename
+    
+    async def _download_google_drive(self, client: httpx.AsyncClient, url: str) -> bytes:
+        """Handle Google Drive specific download logic."""
+        # First request to get the download confirmation
+        response = await client.get(url)
+        
+        if response.status_code == 200:
+            # Check if this is the actual file or a confirmation page
+            content_type = response.headers.get('content-type', '').lower()
+            
+            if any(file_type in content_type for file_type in ['pdf', 'docx', 'document', 'octet-stream']):
+                # Direct file download
+                return response.content
+            elif 'text/html' in content_type:
+                # This is likely a confirmation page for large files
+                # Try to find the confirmation link
+                html_content = response.text
+                
+                # Look for download confirmation patterns
+                import re
+                confirm_patterns = [
+                    r'href="(/uc\?export=download[^"]*)"',
+                    r'"downloadUrl":"([^"]*)"',
+                    r'action="([^"]*download[^"]*)"'
+                ]
+                
+                for pattern in confirm_patterns:
+                    match = re.search(pattern, html_content)
+                    if match:
+                        confirm_url = match.group(1)
+                        if confirm_url.startswith('/'):
+                            confirm_url = f"https://drive.google.com{confirm_url}"
+                        
+                        # Try the confirmation URL
+                        confirm_response = await client.get(confirm_url)
+                        if confirm_response.status_code == 200:
+                            return confirm_response.content
+                
+                # If no confirmation link found, return original content
+                return response.content
+            else:
+                return response.content
+        elif response.status_code == 303:
+            # Handle redirect
+            location = response.headers.get('location')
+            if location:
+                redirect_response = await client.get(location)
+                return redirect_response.content
+        
+        # Fallback: return whatever content we got
+        return response.content if response.status_code < 400 else b''
+    
+    async def _download_dropbox(self, client: httpx.AsyncClient, url: str) -> bytes:
+        """Handle Dropbox specific download logic."""
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.content
+    
+    async def _download_cloud_storage(self, client: httpx.AsyncClient, url: str) -> bytes:
+        """Handle AWS S3, Google Cloud Storage, Azure Blob storage."""
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.content
+    
+    async def _download_direct(self, client: httpx.AsyncClient, url: str) -> bytes:
+        """Handle direct file downloads."""
+        response = await client.get(url)
+        response.raise_for_status()
+        return response.content
 
 # ENHANCED: Pydantic Models with missing methods
 class PolicyInfoResponse(BaseModel):
@@ -336,7 +543,7 @@ class SessionManager:
         ACTIVE_SESSIONS[document_hash] = (session, current_time)
         logger.info(f"🆕 Created new session: {document_hash}")
         return session
-
+    
     @staticmethod
     def get_cached_response(query_hash: str, doc_hash: str) -> Optional[Dict[str, Any]]:
         """Get cached response if available and not expired."""
@@ -348,7 +555,7 @@ class SessionManager:
             else:
                 del QUERY_CACHE[cache_key]
         return None
-
+    
     @staticmethod
     def cache_response(query_hash: str, doc_hash: str, response: Dict[str, Any]):
         """Cache response with timestamp."""
@@ -394,7 +601,6 @@ async def safe_cache_get(key: str) -> Optional[Any]:
                 del DOCUMENT_CACHE[key]
                 logger.info(f"🗑️ TTL expired for cache entry: {key[:8]}")
                 return None
-            
             # Update access time
             entry.accessed_at = datetime.now()
             return entry.value
@@ -471,12 +677,11 @@ async def classify_query_enhanced(query: str, domain: str) -> Tuple[str, str]:
     # Check for amounts using enhanced currency detection
     extracted_amounts = extract_amounts_from_query(query)
     has_amounts = len(extracted_amounts) > 0
-
+    
     # Log detected amounts with currency
     if extracted_amounts:
         amount_info = [f"{amt['formatted']}" for amt in extracted_amounts]
         logger.info(f"💰 Detected amounts: {', '.join(amount_info)}")
-
     
     # Calculate keyword scores
     claim_score = sum(1 for keyword in claim_keywords if keyword in query_lower)
@@ -599,7 +804,6 @@ def detect_document_currency(documents: List[Document]) -> str:
 def assess_query_complexity(query: str) -> str:
     """Assess query complexity for appropriate handling."""
     word_count = len(query.split())
-    
     if word_count <= 5:
         return "SIMPLE"
     elif word_count <= 15:
@@ -656,6 +860,7 @@ class RAGSystem:
             
             self.cleanup_documents()
             logger.info(f"🧹 Async cleanup completed for session: {self.session_id}")
+            
         except Exception as e:
             logger.error(f"❌ Error in async cleanup: {e}")
 
@@ -673,7 +878,7 @@ class RAGSystem:
                 logger.warning(f"⚠️ Error resetting vector store client: {e}")
             finally:
                 self.vector_store = None
-
+        
         self.documents.clear()
         self.processed_files.clear()
         self.structured_info_cache.clear()
@@ -682,9 +887,9 @@ class RAGSystem:
     def _calculate_content_hash(self, documents: List[Document]) -> str:
         """Calculate hash based on document content for unique identification."""
         # Use more content and longer hash to reduce collision risk
-        sample_content = "".join([doc.page_content for doc in documents[:10]]) # More docs
-        full_hash = hashlib.sha256(sample_content.encode()).hexdigest() # SHA256 instead of MD5
-        return full_hash[:16] # 16 chars instead of 8 for lower collision probability
+        sample_content = "".join([doc.page_content for doc in documents[:10]])  # More docs
+        full_hash = hashlib.sha256(sample_content.encode()).hexdigest()  # SHA256 instead of MD5
+        return full_hash[:16]  # 16 chars instead of 8 for lower collision probability
 
     def _calculate_file_hash(self, file_path: str) -> str:
         """Calculate SHA256 hash of file content for unique identification."""
@@ -693,10 +898,10 @@ class RAGSystem:
             with open(file_path, "rb") as f:
                 for chunk in iter(lambda: f.read(4096), b""):
                     hash_sha256.update(chunk)
-            return hash_sha256.hexdigest()[:16] # 16 chars for consistency
+            return hash_sha256.hexdigest()[:16]  # 16 chars for consistency
         except Exception as e:
             logger.error(f"❌ Error calculating file hash: {str(e)}")
-            return str(hash(file_path))[:16] # Fallback to path hash
+            return str(hash(file_path))[:16]  # Fallback to path hash
 
     async def _process_single_file(self, file_path: str) -> List[Document]:
         """Process a single file and return documents with structured information extraction."""
@@ -712,7 +917,7 @@ class RAGSystem:
                 loader = TextLoader(file_path, encoding='utf-8')
             else:
                 raise ValueError(f"Unsupported file type: {file_extension}")
-
+            
             # FIXED: Wrap blocking operations in to_thread
             documents = await asyncio.to_thread(loader.load)
             
@@ -724,12 +929,12 @@ class RAGSystem:
                     'file_type': file_extension,
                     'processed_at': datetime.now().isoformat(),
                     'session_id': self.session_id,
-                    **structured_info # Add extracted structured info
+                    **structured_info  # Add extracted structured info
                 })
-
+            
             logger.info(f"✅ Processed {len(documents)} documents from {os.path.basename(file_path)}")
             return documents
-
+            
         except (FileNotFoundError, PermissionError) as file_error:
             logger.error(f"❌ File access error for {file_path}: {str(file_error)}")
             raise HTTPException(status_code=400, detail=f"Cannot access file {os.path.basename(file_path)}: {str(file_error)}")
@@ -892,7 +1097,7 @@ class RAGSystem:
             # Use robust processing
             result = await self.robust_document_processing(file_paths)
             all_docs = result["documents"]
-
+            
             # Extract processed and skipped files info
             processed_files = []
             skipped_files = []
@@ -901,50 +1106,51 @@ class RAGSystem:
                     processed_files.append(os.path.basename(res["file"]))
                 else:
                     skipped_files.append(os.path.basename(res["file"]))
-
+            
             if not all_docs:
                 logger.warning("⚠️ No documents were successfully processed")
                 raise HTTPException(status_code=500, detail="No documents could be processed successfully")
-
+            
             # FIXED: Domain detection runs once per document set, not per chunk
             self.document_domain = detect_document_domain_batch(all_docs)
             self.domain_config = DOMAIN_CONFIG.get(self.document_domain, DOMAIN_CONFIG["general"])
-
+            
             # Update metadata with detected domain
             for doc in all_docs:
                 doc.metadata['domain'] = self.document_domain
-
+            
             # Detect document currency
             document_currency = detect_document_currency(all_docs)
             for doc in all_docs:
                 doc.metadata['detected_currency'] = document_currency
-
+            
             logger.info(f"📄 Document domain: {self.document_domain}")
-
+            
             # ENHANCED: Domain-adaptive text splitter settings
             chunk_size = self.domain_config["chunk_size"]
             chunk_overlap = self.domain_config["chunk_overlap"]
+            
             logger.info(f"🔧 Using domain-adaptive chunking for '{self.document_domain}': chunk_size={chunk_size}, overlap={chunk_overlap}")
-
+            
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 length_function=len,
                 separators=["\n\n", "\n", ". ", " ", ""]
             )
-
+            
             # FIXED: Wrap blocking operations
             chunked_docs = await asyncio.to_thread(text_splitter.split_documents, all_docs)
             chunked_docs = [doc for doc in chunked_docs if len(doc.page_content.strip()) > 50]
-
+            
             self.documents = chunked_docs
             self.processed_files = processed_files
-
+            
             # Calculate document hash for unique identification
             self.document_hash = self._calculate_content_hash(chunked_docs)
-
+            
             logger.info(f"📄 Created {len(chunked_docs)} chunks from {len(processed_files)} files (domain: {self.document_domain}, hash: {self.document_hash})")
-
+            
             return {
                 'documents': chunked_docs,
                 'processed_files': processed_files,
@@ -953,7 +1159,7 @@ class RAGSystem:
                 'domain': self.document_domain,
                 'document_hash': self.document_hash
             }
-
+            
         except HTTPException:
             raise
         except Exception as e:
@@ -963,25 +1169,26 @@ class RAGSystem:
     async def robust_document_processing(self, file_paths: List[str]) -> Dict[str, Any]:
         """Improved error handling with detailed logging."""
         processing_results = []
+        
         for file_path in file_paths:
             try:
                 result = await self._process_single_file(file_path)
                 processing_results.append({"file": file_path, "status": "success", "documents": result})
             except HTTPException:
-                raise # Re-raise HTTP exceptions as-is
+                raise  # Re-raise HTTP exceptions as-is
             except Exception as e:
                 logger.error(f"Failed to process {file_path}: {e}")
                 processing_results.append({"file": file_path, "status": "failed", "error": str(e)})
-
+        
         # Don't fail entirely if some files processed successfully
         successful_docs = []
         for r in processing_results:
             if r["status"] == "success":
                 successful_docs.extend(r["documents"])
-
+        
         if not successful_docs:
             raise HTTPException(status_code=500, detail="No documents processed successfully")
-
+        
         return {
             "results": processing_results,
             "documents": successful_docs,
@@ -992,11 +1199,11 @@ class RAGSystem:
     async def setup_retrievers(self, persist_directory: str = PERSISTENT_CHROMA_DIR):
         """Initialize vector store and BM25 retriever with proper cleanup."""
         global embedding_model
-
+        
         if not self.documents:
             logger.warning("⚠️ No documents available for retriever setup")
             return False
-
+        
         try:
             # FIXED: Clean up existing vector store properly
             if self.vector_store:
@@ -1008,10 +1215,10 @@ class RAGSystem:
                     logger.warning(f"⚠️ Error resetting previous vector store: {e}")
                 finally:
                     self.vector_store = None
-
+            
             # FIXED: Document-specific storage to prevent cross-document contamination
             document_persist_dir = f"{persist_directory}_{self.document_domain}_{self.document_hash}"
-
+            
             if os.path.exists(f"{document_persist_dir}/chroma.sqlite3"):
                 logger.info(f"✅ Loading cached vector store for document {self.document_hash}")
                 self.vector_store = Chroma(
@@ -1028,17 +1235,17 @@ class RAGSystem:
                     persist_directory=document_persist_dir
                 )
                 logger.info(f"✅ New vector store created and persisted for document {self.document_hash}")
-
+            
             logger.info("🔍 Setting up BM25 retriever...")
             # FIXED: Wrap blocking operations
             self.bm25_retriever = await asyncio.to_thread(BM25Retriever.from_documents, self.documents)
-
+            
             # Domain-adaptive retrieval settings
-            self.bm25_retriever.k = self.domain_config["semantic_search_k"] + 3 # Slightly higher for BM25
-
+            self.bm25_retriever.k = self.domain_config["semantic_search_k"] + 3  # Slightly higher for BM25
+            
             logger.info("✅ Retrievers setup complete")
             return True
-
+            
         except Exception as e:
             logger.error(f"❌ Failed to setup retrievers: {str(e)}")
             return False
@@ -1161,39 +1368,39 @@ class RAGSystem:
     def retrieve_and_rerank(self, query: str, top_k: int = None) -> Tuple[List[Document], List[float]]:
         """Retrieve and rerank documents based on query with enhanced search."""
         global reranker
-
+        
         if top_k is None:
             top_k = self.domain_config["context_docs"]
-
+        
         if not self.vector_store or not self.bm25_retriever:
             logger.warning("⚠️ Retrievers not initialized")
             return [], []
-
+        
         try:
             # Use enhanced search for better retrieval
             retrieved_docs = self.enhanced_document_search(query, top_k=15)
-
+            
             if not retrieved_docs:
                 logger.warning("⚠️ No documents retrieved")
                 return [], []
-
+            
             # Rerank using cross-encoder
             query_doc_pairs = [[query, doc.page_content] for doc in retrieved_docs]
             similarity_scores = reranker.predict(query_doc_pairs)
-
+            
             # Sort by relevance score
             doc_score_pairs = sorted(
                 list(zip(retrieved_docs, similarity_scores)),
                 key=lambda x: x[1],
                 reverse=True
             )
-
+            
             top_docs = [pair[0] for pair in doc_score_pairs[:top_k]]
             top_scores = [float(pair[1]) for pair in doc_score_pairs[:top_k]]
-
+            
             logger.info(f"🔍 Retrieved and reranked {len(top_docs)} documents for domain '{self.document_domain}'")
             return top_docs, top_scores
-
+            
         except Exception as e:
             logger.error(f"❌ Error in retrieve_and_rerank: {str(e)}")
             return [], []
@@ -1202,42 +1409,44 @@ class RAGSystem:
         """Multi-strategy document retrieval with domain adaptation."""
         if top_k is None:
             top_k = self.domain_config["semantic_search_k"]
-
+        
         all_docs = []
-
+        
         # Strategy 1: Semantic search
         if self.vector_store:
             semantic_results = self.vector_store.similarity_search(query, k=top_k)
             all_docs.extend(semantic_results)
-
+        
         # Strategy 2: BM25 search
         if self.bm25_retriever:
             bm25_results = self.bm25_retriever.get_relevant_documents(query)
             all_docs.extend(bm25_results[:top_k])
-
+        
         # Strategy 3: Domain-specific pattern matching
         query_lower = query.lower()
+        
         if self.document_domain == "insurance":
             # Insurance-specific patterns
             if "grace period" in query_lower:
                 pattern_docs = self._pattern_search(r"grace\s+period")
                 all_docs.extend(pattern_docs[:5])
+            
             if "waiting period" in query_lower:
                 pattern_docs = self._pattern_search(r"waiting\s+period")
                 all_docs.extend(pattern_docs[:5])
-
+        
         elif self.document_domain == "physics":
             # Physics-specific patterns
             if "newton" in query_lower or "principia" in query_lower:
                 pattern_docs = self._pattern_search(r"newton|principia|axiom|proposition")
                 all_docs.extend(pattern_docs[:5])
-
+        
         elif self.document_domain == "legal":
             # Legal-specific patterns
             if "article" in query_lower or "clause" in query_lower:
                 pattern_docs = self._pattern_search(r"article|clause|section|subsection")
                 all_docs.extend(pattern_docs[:5])
-
+        
         # Remove duplicates while preserving order
         seen_content = set()
         unique_docs = []
@@ -1245,20 +1454,20 @@ class RAGSystem:
             if doc.page_content not in seen_content:
                 unique_docs.append(doc)
                 seen_content.add(doc.page_content)
-
+        
         return unique_docs[:top_k]
 
     def _pattern_search(self, pattern: str, max_results: int = 5) -> List[Document]:
         """Search for documents containing specific patterns."""
         pattern_docs = []
         compiled_pattern = re.compile(pattern, re.IGNORECASE)
-
+        
         for doc in self.documents:
             if compiled_pattern.search(doc.page_content):
                 pattern_docs.append(doc)
                 if len(pattern_docs) >= max_results:
                     break
-
+        
         return pattern_docs
 
 # ENHANCED: Decision Engine with all missing methods
@@ -1353,7 +1562,7 @@ class DecisionEngine:
                 reasoning_chain=["No documents retrieved for analysis"],
                 matched_sections=[]
             )
-
+        
         try:
             # Extract context with intelligent truncation
             context = self._optimize_context_for_tokens(retrieved_docs, max_tokens=3000)
@@ -1386,6 +1595,7 @@ INSTRUCTIONS:
 ANSWER:"""
 
             global openai_client
+            
             response = await openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -1395,9 +1605,9 @@ ANSWER:"""
                 temperature=0.1,
                 max_tokens=1500
             )
-
+            
             answer = response.choices[0].message.content
-
+            
             return PolicyInfoResponse(
                 question=query,
                 answer=answer,
@@ -1406,7 +1616,7 @@ ANSWER:"""
                 reasoning_chain=reasoning_chain,
                 matched_sections=matched_sections
             )
-
+            
         except Exception as e:
             logger.error(f"❌ Error in get_policy_info: {e}")
             return PolicyInfoResponse(
@@ -1428,7 +1638,7 @@ ANSWER:"""
                 "reasoning": ["No relevant policy documents found"],
                 "risk_factors": ["Missing policy documentation"]
             }
-
+        
         try:
             # Analyze claim components
             component_analysis = await self._analyze_insurance_components(query, retrieved_docs)
@@ -1481,6 +1691,7 @@ Respond in JSON format with:
 JSON RESPONSE:"""
 
             global openai_client
+            
             response = await openai_client.chat.completions.create(
                 model="gpt-4o",
                 messages=[
@@ -1490,7 +1701,7 @@ JSON RESPONSE:"""
                 temperature=0.1,
                 max_tokens=1000
             )
-
+            
             # Parse JSON response
             try:
                 decision_data = json.loads(response.choices[0].message.content)
@@ -1504,7 +1715,7 @@ JSON RESPONSE:"""
                     "risk_factors": ["Unable to parse decision response"],
                     "reasoning": ["JSON parsing error in decision response"]
                 }
-
+            
             # Enhance with additional analysis
             decision_data.update({
                 "confidence": confidence,
@@ -1513,9 +1724,9 @@ JSON RESPONSE:"""
                 "reasoning_chain": reasoning_chain,
                 "sources": list(set([doc.metadata.get('source', 'Unknown') for doc in retrieved_docs]))
             })
-
+            
             return decision_data
-
+            
         except Exception as e:
             logger.error(f"❌ Error in get_structured_decision: {e}")
             return {
@@ -1626,10 +1837,8 @@ JSON RESPONSE:"""
             return 0.5  # Default if no clear terms
         
         match_scores = []
-        
         for doc in retrieved_docs:
             doc_terms = set(doc.page_content.lower().split())
-            
             # Calculate term overlap
             overlap = len(query_terms.intersection(doc_terms))
             match_score = overlap / len(query_terms)
@@ -1684,7 +1893,7 @@ JSON RESPONSE:"""
     async def get_general_document_answer(self, query: str, context_docs: List[Document], domain: str = "general") -> GeneralDocumentResponse:
         """Handle any type of document with robust error handling and fallback."""
         global openai_client
-
+        
         if not context_docs:
             return GeneralDocumentResponse(
                 query_type="GENERAL_DOCUMENT_QA",
@@ -1694,7 +1903,7 @@ JSON RESPONSE:"""
                 source_documents=[],
                 reasoning="No document content available for analysis."
             )
-
+        
         # FIXED: Robust error handling with exponential backoff
         max_retries = 3
         base_delay = 1
@@ -1703,12 +1912,13 @@ JSON RESPONSE:"""
             try:
                 context = ""
                 source_files = []
+                
                 for i, doc in enumerate(context_docs):
                     context += f"\n--- Document Section {i+1} | Source: {doc.metadata.get('source_file', 'Unknown')} ---\n"
                     context += doc.page_content + "\n"
                     if doc.metadata.get('source_file'):
                         source_files.append(doc.metadata.get('source_file'))
-
+                
                 prompt = f"""You are a helpful document analysis assistant specialized in {domain} documents. Answer the question accurately based on the provided document content.
 
 Document Content:
@@ -1726,7 +1936,7 @@ Instructions:
 Provide a direct, informative answer that addresses the user's question comprehensively."""
 
                 logger.info(f"🤖 Calling OpenAI API for general document QA (domain: {domain}, attempt: {attempt + 1})...")
-
+                
                 response = await openai_client.chat.completions.create(
                     model="gpt-4o",
                     messages=[
@@ -1742,33 +1952,33 @@ Provide a direct, informative answer that addresses the user's question comprehe
                     temperature=0.1,
                     max_tokens=2000
                 )
-
+                
                 answer = response.choices[0].message.content
-
+                
                 # Determine confidence based on answer quality and context relevance
                 confidence = "high"
                 reasoning = f"Answer generated from {len(context_docs)} relevant document sections with {domain} domain analysis"
-
+                
                 if "not found" in answer.lower() or "no information" in answer.lower():
                     confidence = "low"
                     reasoning = "Limited information available in the document content"
                 elif "unclear" in answer.lower() or "ambiguous" in answer.lower():
                     confidence = "medium"
                     reasoning = "Some ambiguity in the source material"
-
+                
                 return GeneralDocumentResponse(
                     query_type="GENERAL_DOCUMENT_QA",
                     domain=domain,
                     answer=answer,
                     confidence=confidence,
-                    source_documents=list(set(source_files)), # Remove duplicates
+                    source_documents=list(set(source_files)),  # Remove duplicates
                     reasoning=reasoning
                 )
-
+                
             except openai.RateLimitError as e:
                 logger.warning(f"⏰ Rate limit hit on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt) # Exponential backoff
+                    delay = base_delay * (2 ** attempt)  # Exponential backoff
                     logger.info(f"🔄 Retrying in {delay} seconds...")
                     await asyncio.sleep(delay)
                     continue
@@ -1776,12 +1986,23 @@ Provide a direct, informative answer that addresses the user's question comprehe
                     return GeneralDocumentResponse(
                         query_type="GENERAL_DOCUMENT_QA",
                         domain=domain,
-                        answer="I'm currently experiencing high demand. Please try again in a moment. Based on the document content, I can see relevant information is available but cannot process it right now due to API rate limits.",
+                        answer="I'm currently experiencing high demand. Please try again in a moment. Based on the document content, I can see relevant information is available but cannot process it right now.",
                         confidence="low",
                         source_documents=list(set(source_files)) if 'source_files' in locals() else [],
-                        reasoning="OpenAI API rate limit exceeded after retries"
+                        reasoning="Rate limit exceeded - unable to process request"
                     )
-
+                    
+            except openai.BadRequestError as e:
+                logger.error(f"❌ Bad request error on attempt {attempt + 1}: {e}")
+                return GeneralDocumentResponse(
+                    query_type="GENERAL_DOCUMENT_QA",
+                    domain=domain,
+                    answer="There was an issue with processing your question format. Please try rephrasing your question.",
+                    confidence="low",
+                    source_documents=[],
+                    reasoning="Invalid request format"
+                )
+                
             except openai.APIError as e:
                 logger.error(f"❌ OpenAI API error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
@@ -1793,14 +2014,14 @@ Provide a direct, informative answer that addresses the user's question comprehe
                     return GeneralDocumentResponse(
                         query_type="GENERAL_DOCUMENT_QA",
                         domain=domain,
-                        answer="I encountered a technical issue while processing your question. The document content appears relevant, but I cannot provide a complete analysis at this time. Please try again shortly.",
+                        answer="I'm experiencing technical difficulties. Please try again later.",
                         confidence="low",
                         source_documents=list(set(source_files)) if 'source_files' in locals() else [],
-                        reasoning="OpenAI API error after retries"
+                        reasoning="API service unavailable"
                     )
-
+                    
             except Exception as e:
-                logger.error(f"❌ Unexpected error in general document QA on attempt {attempt + 1}: {str(e)}")
+                logger.error(f"❌ Unexpected error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
                     delay = base_delay * (2 ** attempt)
                     logger.info(f"🔄 Retrying in {delay} seconds...")
@@ -1810,267 +2031,71 @@ Provide a direct, informative answer that addresses the user's question comprehe
                     return GeneralDocumentResponse(
                         query_type="GENERAL_DOCUMENT_QA",
                         domain=domain,
-                        answer=f"An unexpected error occurred while processing this question. The system encountered: {str(e)}. Please try again or contact support if the issue persists.",
+                        answer=f"An unexpected error occurred while processing your question. Please try again or contact support if the issue persists.",
                         confidence="low",
-                        source_documents=[],
-                        reasoning="System error during processing after retries"
+                        source_documents=list(set(source_files)) if 'source_files' in locals() else [],
+                        reasoning=f"System error: {str(e)}"
                     )
-
-        # This should never be reached due to the loop structure, but just in case
+        
+        # This should never be reached, but just in case
         return GeneralDocumentResponse(
             query_type="GENERAL_DOCUMENT_QA",
             domain=domain,
-            answer="Maximum retry attempts exceeded. Please try again later.",
+            answer="Unable to process request after multiple attempts.",
             confidence="low",
             source_documents=[],
             reasoning="Maximum retry attempts exceeded"
         )
 
-# ENHANCED: Document processing functions
-async def process_document_async(file_content: bytes, filename: str) -> List[Document]:
-    """Process document content asynchronously."""
-    # Save to temp file first
-    temp_file_path = f"/tmp/{uuid.uuid4().hex}_{filename}"
+# ENHANCED: Startup and Shutdown handlers
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan with proper resource management."""
+    logger.info("🚀 Starting up Enhanced Document Processing API...")
+    
+    # Initialize global components
+    await initialize_components()
+    
+    # Start periodic cleanup task
+    cleanup_task = asyncio.create_task(periodic_cleanup())
     
     try:
-        with open(temp_file_path, "wb") as f:
-            f.write(file_content)
-        
-        # Determine file type and process
-        file_extension = os.path.splitext(filename)[1].lower()
-        
-        if file_extension == '.pdf':
-            loader = PyMuPDFLoader(temp_file_path)
-        elif file_extension == '.docx':
-            loader = Docx2txtLoader(temp_file_path)
-        elif file_extension == '.txt':
-            loader = TextLoader(temp_file_path, encoding='utf-8')
-        else:
-            raise ValueError(f"Unsupported file type: {file_extension}")
-        
-        # Load documents asynchronously
-        documents = await asyncio.to_thread(loader.load)
-        
-        # Add metadata
-        for doc in documents:
-            doc.metadata.update({
-                'source_file': filename,
-                'file_type': file_extension,
-                'processed_at': datetime.now().isoformat()
-            })
-        
-        return documents
-        
+        yield
     finally:
-        # Cleanup temp file
-        if os.path.exists(temp_file_path):
+        logger.info("🔄 Shutting down Enhanced Document Processing API...")
+        
+        # Cancel cleanup task
+        cleanup_task.cancel()
+        
+        # Cleanup active sessions
+        for session_id, (session, _) in ACTIVE_SESSIONS.items():
             try:
-                os.remove(temp_file_path)
-            except Exception:
-                pass
-
-# ENHANCED: Main processing functions with optimizations
-async def process_document_qa_optimized(
-    file_content: bytes,
-    filename: str,
-    questions: List[str],
-    session_id: str = None
-) -> List[Dict[str, Any]]:
-    """Optimized document Q&A processing with session management and caching."""
-    
-    try:
-        # Generate document hash for session management
-        document_hash = hashlib.sha256(file_content + filename.encode()).hexdigest()[:16]
+                await session.async_cleanup()
+                logger.info(f"✅ Cleaned up session: {session_id}")
+            except Exception as e:
+                logger.warning(f"⚠️ Error cleaning session {session_id}: {e}")
         
-        # Get or create session
-        rag_system = await SessionManager.get_or_create_session(document_hash)
-        
-        async with rag_system:
-            # Check if system is already set up for this document
-            if not hasattr(rag_system, 'vector_store') or rag_system.vector_store is None:
-                # Process document and set up RAG system
-                documents = await process_document_async(file_content, filename)
-                if not documents:
-                    return [{"error": "Failed to process document", "question": q} for q in questions]
-                
-                # Detect domain
-                domain = await detect_document_domain_async(documents)
-                
-                # Set up vector store
-                rag_system.documents = documents
-                rag_system.document_hash = document_hash
-                rag_system.current_domain = domain
-                
-                success = await rag_system.setup_vector_store_optimized(documents, domain)
-                if not success:
-                    return [{"error": "Failed to setup vector store", "question": q} for q in questions]
-                
-                # Setup retrievers
-                await rag_system.setup_retrievers_async()
-                
-                logger.info(f"✅ RAG system initialized for {filename}")
-            else:
-                logger.info(f"♻️ Reusing existing RAG system for {filename}")
-            
-            # Process questions in parallel batches
-            batch_size = 3  # Optimal batch size for memory management
-            results = []
-            
-            for i in range(0, len(questions), batch_size):
-                batch_questions = questions[i:i + batch_size]
-                
-                # Process batch in parallel
-                batch_results = await process_question_batch_optimized(
-                    batch_questions, rag_system, document_hash
-                )
-                results.extend(batch_results)
-                
-                # Small delay between batches to prevent overload
-                if i + batch_size < len(questions):
-                    await asyncio.sleep(0.1)
-            
-            return results
-            
-    except Exception as e:
-        logger.error(f"❌ Error in process_document_qa_optimized: {e}")
-        return [{"error": str(e), "question": q} for q in questions]
+        ACTIVE_SESSIONS.clear()
+        logger.info("🧹 Application shutdown complete")
 
-async def process_question_batch_optimized(
-    questions: List[str], 
-    rag_system: RAGSystem, 
-    document_hash: str
-) -> List[Dict[str, Any]]:
-    """Process a batch of questions with caching and optimization."""
-    
-    results = []
-    decision_engine = DecisionEngine()
-    
-    for question in questions:
-        try:
-            # Check cache first
-            question_hash = hashlib.sha256(question.encode()).hexdigest()[:16]
-            cached_response = SessionManager.get_cached_response(question_hash, document_hash)
-            
-            if cached_response:
-                logger.info(f"📋 Using cached response for: {question[:50]}...")
-                results.append(cached_response)
-                continue
-            
-            # Classify query
-            query_type, domain = await classify_query_enhanced(question, rag_system.current_domain)
-            
-            # Retrieve relevant documents
-            retrieved_docs, similarity_scores = await rag_system.retrieve_and_rerank_optimized(question)
-            
-            if not retrieved_docs:
-                response = {
-                    "question": question,
-                    "answer": "No relevant information found in the document.",
-                    "confidence": 0.0,
-                    "sources": [],
-                    "query_type": query_type
-                }
-            else:
-                # Process based on query type
-                if query_type == "INSURANCE_POLICY_INFO":
-                    policy_response = await decision_engine.get_policy_info(question, retrieved_docs)
-                    response = {
-                        "question": policy_response.question,
-                        "answer": policy_response.answer,
-                        "confidence": policy_response.confidence,
-                        "sources": policy_response.sources,
-                        "reasoning_chain": policy_response.reasoning_chain,
-                        "matched_sections": policy_response.matched_sections,
-                        "query_type": query_type
-                    }
-                
-                elif query_type == "INSURANCE_CLAIM_PROCESSING":
-                    claim_decision = await decision_engine.get_structured_decision(
-                        question, retrieved_docs, similarity_scores
-                    )
-                    response = {
-                        "question": question,
-                        "decision": claim_decision.get("decision", "NEEDS_REVIEW"),
-                        "confidence": claim_decision.get("confidence", 0.0),
-                        "coverage_amount": claim_decision.get("coverage_amount"),
-                        "deductible": claim_decision.get("deductible"),
-                        "reasoning": claim_decision.get("reasoning", []),
-                        "risk_factors": claim_decision.get("risk_factors", []),
-                        "sources": claim_decision.get("sources", []),
-                        "query_type": query_type
-                    }
-                
-                elif query_type == "INSURANCE_COMPONENT_ANALYSIS":
-                    component_response = await decision_engine.get_component_analysis(
-                        question, retrieved_docs, similarity_scores
-                    )
-                    response = {
-                        "question": component_response.query,
-                        "analysis": component_response.decision,
-                        "components": component_response.matched_components,
-                        "confidence": component_response.confidence,
-                        "total_score": component_response.total_score,
-                        "reasoning_chain": component_response.reasoning_chain,
-                        "clause_traceability": component_response.clause_traceability,
-                        "sources": component_response.sources,
-                        "query_type": query_type
-                    }
-                
-                else:
-                    # General Q&A fallback
-                    response = await process_general_qa(question, retrieved_docs, decision_engine)
-                    response["query_type"] = query_type
-            
-            # Cache the response
-            SessionManager.cache_response(question_hash, document_hash, response)
-            results.append(response)
-            
-        except Exception as e:
-            logger.error(f"❌ Error processing question '{question}': {e}")
-            response = {
-                "question": question,
-                "answer": f"Error processing question: {str(e)}",
-                "confidence": 0.0,
-                "sources": [],
-                "query_type": "ERROR",
-                "error": str(e)
-            }
-            results.append(response)
-    
-    return results
-
-async def process_general_qa(question: str, retrieved_docs: List[Document], decision_engine: DecisionEngine) -> Dict[str, Any]:
-    """Process general Q&A with fallback handling."""
-    try:
-        general_response = await decision_engine.get_general_document_answer(
-            question, retrieved_docs, "general"
-        )
-        return {
-            "question": question,
-            "answer": general_response.answer,
-            "confidence": general_response.confidence,
-            "sources": general_response.source_documents,
-            "reasoning": general_response.reasoning,
-            "domain": general_response.domain
-        }
-    except Exception as e:
-        logger.error(f"❌ Error in general Q&A: {e}")
-        return {
-            "question": question,
-            "answer": f"Error processing question: {str(e)}",
-            "confidence": "low",
-            "sources": [],
-            "error": str(e)
-        }
-
-# ENHANCED: Global initialization
-@lru_cache(maxsize=1)
-def initialize_models():
-    """Initialize models with caching to prevent reloading."""
+async def initialize_components():
+    """Initialize all global components."""
     global embedding_model, reranker, openai_client
     
     try:
-        logger.info("🚀 Initializing AI models...")
+        # Initialize embedding model
+        logger.info("🔧 Loading embedding model...")
+        embedding_model = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        logger.info("✅ Embedding model loaded")
+        
+        # Initialize reranker
+        logger.info("🔧 Loading reranker model...")
+        reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
+        logger.info("✅ Reranker model loaded")
         
         # Initialize OpenAI client
         openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -2078,113 +2103,60 @@ def initialize_models():
             raise ValueError("OPENAI_API_KEY environment variable not set")
         
         openai_client = AsyncOpenAI(api_key=openai_api_key)
+        logger.info("✅ OpenAI client initialized")
         
-        # Initialize embedding model
-        logger.info("📊 Loading embedding model...")
-        embedding_model = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/all-MiniLM-L6-v2",
-            model_kwargs={'device': 'cpu'},
-            encode_kwargs={'normalize_embeddings': True}
-        )
-        
-        # Initialize reranker
-        logger.info("🔄 Loading reranker model...")
-        reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-2-v2')
-        
-        logger.info("✅ All models initialized successfully!")
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Failed to initialize models: {e}")
-        raise
-
-# ENHANCED: Lifespan management
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Enhanced lifespan management with proper initialization and cleanup."""
-    # Startup
-    logger.info("🚀 Application startup initiated...")
-    
-    try:
-        # Check system resources
-        memory = psutil.virtual_memory()
-        logger.info(f"💾 Available memory: {memory.available / (1024**3):.2f} GB")
-        
-        # Initialize models
-        initialize_models()
-        
-        # Ensure persistent directory exists
+        # Create persistent directory
         os.makedirs(PERSISTENT_CHROMA_DIR, exist_ok=True)
-        logger.info(f"📁 Persistent storage ready: {PERSISTENT_CHROMA_DIR}")
-        
-        # Start background cleanup task
-        cleanup_task = asyncio.create_task(periodic_cleanup())
-        
-        logger.info("✅ Application startup complete!")
-        
-        yield
+        logger.info(f"✅ Persistent storage ready: {PERSISTENT_CHROMA_DIR}")
         
     except Exception as e:
-        logger.error(f"❌ Startup failed: {e}")
+        logger.error(f"❌ Failed to initialize components: {e}")
         raise
-    finally:
-        # Shutdown
-        logger.info("🛑 Application shutdown initiated...")
-        
-        try:
-            # Cancel background tasks
-            if 'cleanup_task' in locals():
-                cleanup_task.cancel()
-                try:
-                    await cleanup_task
-                except asyncio.CancelledError:
-                    pass
-            
-            # Cleanup active sessions
-            cleanup_count = 0
-            for session_id, (session, _) in list(ACTIVE_SESSIONS.items()):
-                try:
-                    await session.async_cleanup()
-                    cleanup_count += 1
-                except Exception as e:
-                    logger.warning(f"⚠️ Error cleaning session {session_id}: {e}")
-            
-            ACTIVE_SESSIONS.clear()
-            logger.info(f"🧹 Cleaned up {cleanup_count} active sessions")
-            
-            # Clear caches
-            QUERY_CACHE.clear()
-            DOCUMENT_CACHE.clear()
-            
-            logger.info("✅ Application shutdown complete!")
-            
-        except Exception as e:
-            logger.error(f"❌ Shutdown error: {e}")
 
 async def periodic_cleanup():
-    """Background task for periodic cleanup."""
+    """Periodic cleanup task for cache and sessions."""
     while True:
         try:
-            await asyncio.sleep(CACHE_CLEANUP_INTERVAL)  # 5 minutes
+            logger.info("🧹 Starting periodic cleanup...")
+            
+            # Cleanup expired cache
             await cleanup_expired_cache()
-            logger.info("🧹 Periodic cleanup completed")
-        except asyncio.CancelledError:
-            logger.info("🛑 Cleanup task cancelled")
-            break
+            
+            # Cleanup expired sessions
+            current_time = time.time()
+            expired_sessions = [
+                session_id for session_id, (session, timestamp) in ACTIVE_SESSIONS.items()
+                if current_time - timestamp > SESSION_TTL
+            ]
+            
+            for session_id in expired_sessions:
+                session, _ = ACTIVE_SESSIONS.pop(session_id)
+                await session.async_cleanup()
+                logger.info(f"🗑️ Cleaned expired session: {session_id}")
+            
+            # Memory usage logging
+            memory_info = psutil.Process().memory_info()
+            logger.info(f"📊 Memory usage: {memory_info.rss / 1024 / 1024:.1f} MB")
+            
+            logger.info("✅ Periodic cleanup completed")
+            
         except Exception as e:
             logger.error(f"❌ Error in periodic cleanup: {e}")
+        
+        # Wait for next cleanup cycle
+        await asyncio.sleep(CACHE_CLEANUP_INTERVAL)
 
-# ENHANCED: FastAPI app with proper configuration
+# ENHANCED: FastAPI App with proper configuration
 app = FastAPI(
-    title="Enhanced RAG Document Q&A API",
-    description="Advanced document processing and Q&A system with multi-domain support",
-    version="2.0.0",
+    title="Enhanced Document Processing API",
+    description="Advanced RAG system with insurance-specific processing, multi-format support, and URL downloading",
+    version="3.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan
 )
 
-# ENHANCED: CORS configuration
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -2193,61 +2165,62 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ENHANCED: API Routes with comprehensive error handling
+# Add request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    """Log all requests for debugging."""
+    start_time = time.time()
+    
+    # Process request
+    response = await call_next(request)
+    
+    # Log processing time
+    process_time = time.time() - start_time
+    logger.info(f"📊 {request.method} {request.url.path} - {response.status_code} - {process_time:.2f}s")
+    
+    return response
 
-@app.get("/", response_model=Dict[str, str])
+# ENHANCED: API Routes with comprehensive error handling
+@app.get("/", tags=["Health Check"])
 async def root():
-    """Root endpoint with system status."""
+    """Health check endpoint."""
     return {
-        "message": "Enhanced RAG Document Q&A API v2.0",
-        "status": "operational",
-        "docs": "/docs",
-        "health": "/health"
+        "message": "Enhanced Document Processing API is running",
+        "version": "3.0.0",
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "features": [
+            "Multi-format document processing (PDF, DOCX, TXT)",
+            "URL downloading (Google Drive, Dropbox, OneDrive, etc.)",
+            "Insurance-specific claim processing",
+            "Domain-adaptive chunking",
+            "Advanced RAG with reranking",
+            "Session management",
+            "Bearer token authentication"
+        ]
     }
 
-@app.get("/health", response_model=Dict[str, Any])
+@app.get("/health", tags=["Health Check"])
 async def health_check():
-    """Comprehensive health check endpoint."""
+    """Detailed health check with system information."""
     try:
-        # Check system resources
-        memory = psutil.virtual_memory()
-        cpu_percent = psutil.cpu_percent(interval=1)
+        memory_info = psutil.Process().memory_info()
         
-        # Check models
-        models_status = {
-            "embedding_model": embedding_model is not None,
-            "reranker": reranker is not None,
-            "openai_client": openai_client is not None
-        }
-        
-        # Check storage
-        storage_available = os.path.exists(PERSISTENT_CHROMA_DIR)
-        
-        status = {
+        return {
             "status": "healthy",
             "timestamp": datetime.now().isoformat(),
-            "system": {
-                "memory_usage_percent": memory.percent,
-                "cpu_usage_percent": cpu_percent,
-                "storage_available": storage_available
+            "system_info": {
+                "memory_usage_mb": round(memory_info.rss / 1024 / 1024, 2),
+                "active_sessions": len(ACTIVE_SESSIONS),
+                "cache_entries": len(DOCUMENT_CACHE),
+                "query_cache_entries": len(QUERY_CACHE)
             },
-            "models": models_status,
-            "active_sessions": len(ACTIVE_SESSIONS),
-            "cached_queries": len(QUERY_CACHE),
-            "cached_documents": len(DOCUMENT_CACHE),
-            "version": "2.0.0"
+            "components": {
+                "embedding_model": "loaded" if embedding_model else "not_loaded",
+                "reranker": "loaded" if reranker else "not_loaded",
+                "openai_client": "connected" if openai_client else "not_connected"
+            }
         }
-        
-        # Determine overall health
-        if all(models_status.values()) and memory.percent < 90 and cpu_percent < 90:
-            status["status"] = "healthy"
-        elif memory.percent > 95 or cpu_percent > 95:
-            status["status"] = "degraded"
-        else:
-            status["status"] = "warning"
-        
-        return status
-        
     except Exception as e:
         logger.error(f"❌ Health check failed: {e}")
         return {
@@ -2256,352 +2229,402 @@ async def health_check():
             "timestamp": datetime.now().isoformat()
         }
 
-@app.post("/upload_and_query", response_model=List[Dict[str, Any]])
-async def upload_and_query(
-    file: UploadFile = File(..., description="Document file (PDF, DOCX, or TXT)"),
-    questions: str = Form(..., description="JSON array of questions"),
-    bearer_token: str = Depends(verify_bearer_token)
+@app.post("/upload", response_model=UnifiedResponse, tags=["Document Processing"])
+async def upload_documents(
+    files: List[UploadFile] = File(..., description="Documents to upload (PDF, DOCX, TXT)"),
+    query: str = Form(..., description="Query to ask about the documents"),
+    token: str = Depends(verify_bearer_token)
 ):
-    """Upload document and ask multiple questions with enhanced processing."""
+    """Upload documents and get answers with enhanced processing."""
     start_time = time.time()
     
-    try:
-        # Validate file type
-        allowed_extensions = {'.pdf', '.docx', '.txt'}
-        file_extension = os.path.splitext(file.filename)[1].lower()
-        
-        if file_extension not in allowed_extensions:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported file type: {file_extension}. Supported types: {', '.join(allowed_extensions)}"
-            )
-        
-        # Parse questions
-        try:
-            questions_list = json.loads(questions)
-            if not isinstance(questions_list, list) or not questions_list:
-                raise ValueError("Questions must be a non-empty list")
-            
-            # Validate each question
-            for i, q in enumerate(questions_list):
-                if not isinstance(q, str) or not q.strip():
-                    raise ValueError(f"Question {i+1} must be a non-empty string")
-                if len(q) > 1000:
-                    raise ValueError(f"Question {i+1} exceeds 1000 character limit")
-            
-        except json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON format for questions")
-        except ValueError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        
-        # Validate file size
-        file_content = await file.read()
-        if len(file_content) == 0:
-            raise HTTPException(status_code=400, detail="Empty file uploaded")
-        
-        max_file_size = 50 * 1024 * 1024  # 50MB
-        if len(file_content) > max_file_size:
-            raise HTTPException(
-                status_code=400, 
-                detail=f"File too large. Maximum size: {max_file_size / (1024*1024)}MB"
-            )
-        
-        logger.info(f"📄 Processing {file.filename} ({len(file_content)/1024:.1f}KB) with {len(questions_list)} questions")
-        
-        # Process document and questions
-        results = await process_document_qa_optimized(
-            file_content, 
-            file.filename, 
-            questions_list
-        )
-        
-        processing_time = time.time() - start_time
-        logger.info(f"✅ Completed processing in {processing_time:.2f}s")
-        
-        # Add metadata to results
-        for result in results:
-            result.update({
-                "file_name": file.filename,
-                "processing_time_seconds": processing_time,
-                "timestamp": datetime.now().isoformat()
-            })
-        
-        return results
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        processing_time = time.time() - start_time
-        logger.error(f"❌ Error in upload_and_query after {processing_time:.2f}s: {e}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Internal server error: {str(e)}"
-        )
-
-@app.post("/query", response_model=QueryResponse)
-async def query_endpoint(
-    request: QueryRequest,
-    bearer_token: str = Depends(verify_bearer_token)
-):
-    """Query endpoint for active sessions."""
-    try:
-        # This endpoint would work with active sessions
-        # For now, return a message directing to upload_and_query
-        return QueryResponse(
-            decision="USE_UPLOAD_ENDPOINT",
-            confidence_score=1.0,
-            reasoning_chain=["Please use /upload_and_query endpoint to upload document and ask questions"],
-            evidence_sources=[],
-            timestamp=datetime.now().isoformat(),
-            query_type="REDIRECT",
-            domain="system"
-        )
-        
-    except Exception as e:
-        logger.error(f"❌ Error in query endpoint: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-# UPDATED: Fixed endpoint path and enhanced response model for HackRx compliance
-@app.post("/hackrx/run", response_model=EnhancedHackRxResponse)
-async def hackrx_run_endpoint(
-    request: HackRxRequest,
-    bearer_token: str = Depends(verify_bearer_token)
-):
-    """HackRx run endpoint with enhanced responses - compliant with submission requirements."""
-    start_time = time.time()
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided")
+    
+    if not query.strip():
+        raise HTTPException(status_code=400, detail="Query cannot be empty")
+    
+    temp_files = []
     
     try:
-        # Download document from URL
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.get(str(request.documents))
-            if response.status_code != 200:
+        logger.info(f"📁 Processing {len(files)} uploaded files with query: '{query[:100]}...'")
+        
+        # Save uploaded files temporarily
+        for file in files:
+            if not file.filename:
+                continue
+            
+            # Validate file type
+            file_extension = os.path.splitext(file.filename)[1].lower()
+            if file_extension not in ['.pdf', '.docx', '.txt']:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Failed to download document: HTTP {response.status_code}"
+                    detail=f"Unsupported file type: {file_extension}. Supported types: PDF, DOCX, TXT"
                 )
             
-            file_content = response.content
+            # Create temporary file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
+            temp_files.append(temp_file.name)
             
-            # Determine filename from URL
-            filename = str(request.documents).split('/')[-1]
-            if not filename or '.' not in filename:
-                filename = "document.pdf"  # Default assumption
-        
-        logger.info(f"📄 HackRx: Processing document from URL with {len(request.questions)} questions")
-        
-        # Process using the optimized pipeline
-        results = await process_document_qa_optimized(
-            file_content,
-            filename,
-            request.questions
-        )
-        
-        # Convert results to HackRx format
-        enhanced_answers = []
-        for result in results:
-            if result.get("query_type") == "INSURANCE_CLAIM_PROCESSING":
-                enhanced_answer = StructuredClaimResponse(
-                    status=result.get("decision", "NEEDS_REVIEW"),
-                    confidence=result.get("confidence", 0.0),
-                    approvedAmount=result.get("coverage_amount", 0.0) or 0.0,
-                    rejectedAmount=0.0,
-                    breakdown=ClaimBreakdown(approved=[], rejected=[]),
-                    keyPolicyReferences=[
-                        PolicyReference(title=source, note="Referenced policy document")
-                        for source in result.get("sources", [])[:3]
-                    ],
-                    summary=result.get("answer", "Claim analysis completed")
-                )
-            elif result.get("query_type") == "INSURANCE_POLICY_INFO":
-                enhanced_answer = PolicyInfoResponse(
-                    question=result.get("question", ""),
-                    answer=result.get("answer", ""),
-                    confidence=result.get("confidence", 0.0),
-                    sources=result.get("sources", []),
-                    reasoning_chain=result.get("reasoning_chain", []),
-                    matched_sections=result.get("matched_sections", [])
-                )
-            else:
-                enhanced_answer = GeneralDocumentResponse(
-                    query_type=result.get("query_type", "GENERAL_QA"),
-                    domain=result.get("domain", "general"),
-                    answer=result.get("answer", ""),
-                    confidence=result.get("confidence", "medium"),
-                    source_documents=result.get("sources", []),
-                    reasoning=result.get("reasoning", None)
-                )
+            # Write file content
+            content = await file.read()
+            temp_file.write(content)
+            temp_file.close()
             
-            enhanced_answers.append(enhanced_answer)
+            logger.info(f"📄 Saved temporary file: {file.filename} ({len(content)} bytes)")
         
-        processing_time = time.time() - start_time
+        if not temp_files:
+            raise HTTPException(status_code=400, detail="No valid files to process")
         
-        return EnhancedHackRxResponse(
-            success=True,
-            processing_time_seconds=processing_time,
-            timestamp=datetime.now().isoformat(),
-            message=f"Successfully processed {len(request.questions)} questions from document",
-            answers=enhanced_answers
-        )
+        # Calculate document hash for session management
+        combined_hash = hashlib.sha256()
+        for temp_file in temp_files:
+            with open(temp_file, 'rb') as f:
+                combined_hash.update(f.read())
+        document_hash = combined_hash.hexdigest()[:16]
         
-    except httpx.RequestError as e:
-        processing_time = time.time() - start_time
-        logger.error(f"❌ Network error downloading document: {e}")
-        return EnhancedHackRxResponse(
-            success=False,
-            processing_time_seconds=processing_time,
-            timestamp=datetime.now().isoformat(),
-            message=f"Failed to download document: {str(e)}",
-            answers=[]
-        )
-    except Exception as e:
-        processing_time = time.time() - start_time
-        logger.error(f"❌ Error in HackRx endpoint: {e}")
-        return EnhancedHackRxResponse(
-            success=False,
-            processing_time_seconds=processing_time,
-            timestamp=datetime.now().isoformat(),
-            message=f"Processing error: {str(e)}",
-            answers=[]
-        )
-
-@app.get("/sessions", response_model=Dict[str, Any])
-async def list_sessions(bearer_token: str = Depends(verify_bearer_token)):
-    """List active sessions with details."""
-    try:
-        sessions_info = {}
-        current_time = time.time()
+        # Get or create session
+        rag_session = await SessionManager.get_or_create_session(document_hash)
         
-        for session_id, (session, timestamp) in ACTIVE_SESSIONS.items():
-            time_active = current_time - timestamp
-            sessions_info[session_id] = {
-                "time_active_seconds": time_active,
-                "document_count": len(session.documents) if hasattr(session, 'documents') else 0,
-                "domain": getattr(session, 'current_domain', 'unknown'),
-                "processed_files": getattr(session, 'processed_files', [])
-            }
+        # Check if documents are already processed
+        if not rag_session.documents:
+            # Process documents
+            processing_result = await rag_session.load_and_process_documents(temp_files)
+            
+            # Setup retrievers
+            setup_success = await rag_session.setup_retrievers()
+            if not setup_success:
+                raise HTTPException(status_code=500, detail="Failed to setup document retrievers")
+            
+            logger.info(f"✅ Processed {len(processing_result['processed_files'])} files into {processing_result['total_chunks']} chunks")
         
-        return {
-            "active_sessions": len(ACTIVE_SESSIONS),
-            "sessions": sessions_info,
-            "cache_stats": {
-                "query_cache_size": len(QUERY_CACHE),
-                "document_cache_size": len(DOCUMENT_CACHE)
-            }
-        }
+        # Process query
+        query_type, domain = await classify_query_enhanced(query, rag_session.document_domain)
+        logger.info(f"🔍 Query classified as: {query_type} (domain: {domain})")
         
-    except Exception as e:
-        logger.error(f"❌ Error listing sessions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/sessions/{session_id}")
-async def delete_session(
-    session_id: str,
-    bearer_token: str = Depends(verify_bearer_token)
-):
-    """Delete a specific session."""
-    try:
-        if session_id in ACTIVE_SESSIONS:
-            session, _ = ACTIVE_SESSIONS.pop(session_id)
-            await session.async_cleanup()
-            logger.info(f"🗑️ Deleted session: {session_id}")
-            return {"message": f"Session {session_id} deleted successfully"}
+        # Get answer based on query type
+        decision_engine = DecisionEngine()
+        
+        if query_type == "INSURANCE_CLAIM_PROCESSING":
+            # Retrieve relevant documents
+            retrieved_docs, similarity_scores = rag_session.retrieve_and_rerank(query)
+            
+            if not retrieved_docs:
+                raise HTTPException(status_code=404, detail="No relevant information found in documents")
+            
+            # Get structured decision
+            decision_data = await decision_engine.get_structured_decision(query, retrieved_docs, similarity_scores)
+            
+            return UnifiedResponse(
+                query_type=query_type,
+                domain=domain,
+                answer=decision_data.get('reasoning', ['Decision processed'])[0] if decision_data.get('reasoning') else "Decision processed",
+                decision=decision_data.get('decision', 'NEEDS_REVIEW'),
+                approved_amount=decision_data.get('coverage_amount'),
+                policy_references=decision_data.get('applicable_clauses', []),
+                confidence=f"{decision_data.get('confidence', 0.0):.1%}",
+                source_documents=decision_data.get('sources', [])
+            )
+            
+        elif query_type == "INSURANCE_POLICY_INFO":
+            # Retrieve relevant documents
+            retrieved_docs, similarity_scores = rag_session.retrieve_and_rerank(query)
+            
+            if not retrieved_docs:
+                raise HTTPException(status_code=404, detail="No relevant policy information found")
+            
+            # Get policy information
+            policy_response = await decision_engine.get_policy_info(query, retrieved_docs)
+            
+            return UnifiedResponse(
+                query_type=query_type,
+                domain=domain,
+                answer=policy_response.answer,
+                confidence=f"{policy_response.confidence:.1%}",
+                source_documents=policy_response.sources
+            )
+            
         else:
-            raise HTTPException(status_code=404, detail="Session not found")
+            # General document Q&A
+            retrieved_docs, _ = rag_session.retrieve_and_rerank(query)
             
+            if not retrieved_docs:
+                raise HTTPException(status_code=404, detail="No relevant information found in documents")
+            
+            # Get general answer
+            general_response = await decision_engine.get_general_document_answer(query, retrieved_docs, domain)
+            
+            return UnifiedResponse(
+                query_type=general_response.query_type,
+                domain=general_response.domain,
+                answer=general_response.answer,
+                confidence=general_response.confidence,
+                source_documents=general_response.source_documents
+            )
+    
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error deleting session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Error in upload endpoint: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal processing error: {str(e)}")
+    
+    finally:
+        # Cleanup temporary files
+        for temp_file in temp_files:
+            try:
+                if os.path.exists(temp_file):
+                    os.unlink(temp_file)
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to cleanup temp file {temp_file}: {cleanup_error}")
+        
+        processing_time = time.time() - start_time
+        logger.info(f"⏱️ Upload request completed in {processing_time:.2f}s")
 
-@app.post("/clear_cache")
-async def clear_cache(bearer_token: str = Depends(verify_bearer_token)):
-    """Clear all caches."""
+@app.post("/hackrx/run", response_model=EnhancedHackRxResponse, tags=["HackRx Challenge"])
+async def hackrx_endpoint(
+    request: HackRxRequest,
+    token: str = Depends(verify_bearer_token)
+):
+    """Enhanced HackRx endpoint with comprehensive error handling and URL support."""
+    start_time = time.time()
+    
     try:
-        # Clear query cache
-        query_count = len(QUERY_CACHE)
-        QUERY_CACHE.clear()
+        logger.info(f"🏆 HackRx request received with {len(request.questions)} questions")
+        logger.info(f"📎 Document URL: {request.documents}")
         
-        # Clear document cache
-        doc_count = len(DOCUMENT_CACHE)
-        async with _cache_lock:
-            DOCUMENT_CACHE.clear()
+        # Enhanced URL validation and downloading
+        url_downloader = URLDownloader(timeout=120.0)  # 2 minute timeout
         
-        logger.info(f"🧹 Cleared {query_count} query cache entries and {doc_count} document cache entries")
+        try:
+            document_content, filename = await url_downloader.download_from_url(str(request.documents))
+            logger.info(f"✅ Downloaded document: {filename} ({len(document_content)} bytes)")
+            
+        except HTTPException as he:
+            logger.error(f"❌ Download failed: {he.detail}")
+            return EnhancedHackRxResponse(
+                success=False,
+                message=f"Failed to download document: {he.detail}",
+                answers=[],
+                processing_time_seconds=time.time() - start_time,
+                timestamp=datetime.now().isoformat()
+            )
+        except Exception as e:
+            logger.error(f"❌ Unexpected download error: {e}")
+            return EnhancedHackRxResponse(
+                success=False,
+                message=f"Download error: {str(e)}",
+                answers=[],
+                processing_time_seconds=time.time() - start_time,
+                timestamp=datetime.now().isoformat()
+            )
         
-        return {
-            "message": "Cache cleared successfully",
-            "cleared_query_entries": query_count,
-            "cleared_document_entries": doc_count
-        }
+        # Save document to temporary file
+        file_extension = os.path.splitext(filename)[1].lower() or '.pdf'
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=file_extension)
+        temp_file.write(document_content)
+        temp_file.close()
         
+        try:
+            # Calculate document hash for session management
+            document_hash = hashlib.sha256(document_content).hexdigest()[:16]
+            
+            # Get or create session
+            rag_session = await SessionManager.get_or_create_session(document_hash)
+            
+            # Process document if not already processed
+            if not rag_session.documents:
+                logger.info(f"📄 Processing new document: {filename}")
+                processing_result = await rag_session.load_and_process_documents([temp_file.name])
+                
+                setup_success = await rag_session.setup_retrievers()
+                if not setup_success:
+                    return EnhancedHackRxResponse(
+                        success=False,
+                        message="Failed to setup document processing system",
+                        answers=[],
+                        processing_time_seconds=time.time() - start_time,
+                        timestamp=datetime.now().isoformat()
+                    )
+                
+                logger.info(f"✅ Document processed successfully with {processing_result['total_chunks']} chunks")
+            else:
+                logger.info("♻️ Using cached document processing")
+            
+            # Process all questions
+            answers = []
+            decision_engine = DecisionEngine()
+            
+            for i, question in enumerate(request.questions, 1):
+                logger.info(f"🔍 Processing question {i}/{len(request.questions)}: '{question[:100]}...'")
+                
+                try:
+                    # Classify query
+                    query_type, domain = await classify_query_enhanced(question, rag_session.document_domain)
+                    
+                    # Retrieve relevant documents
+                    retrieved_docs, similarity_scores = rag_session.retrieve_and_rerank(question)
+                    
+                    if not retrieved_docs:
+                        answers.append(GeneralDocumentResponse(
+                            query_type="GENERAL_DOCUMENT_QA",
+                            domain=domain,
+                            answer="I couldn't find relevant information in the document to answer this question.",
+                            confidence="low",
+                            source_documents=[],
+                            reasoning="No relevant documents retrieved"
+                        ))
+                        continue
+                    
+                    # Process based on query type
+                    if query_type == "INSURANCE_CLAIM_PROCESSING":
+                        decision_data = await decision_engine.get_structured_decision(question, retrieved_docs, similarity_scores)
+                        
+                        # Convert to structured claim response
+                        structured_response = StructuredClaimResponse(
+                            status=decision_data.get('decision', 'NEEDS_REVIEW'),
+                            confidence=decision_data.get('confidence', 0.0),
+                            approvedAmount=decision_data.get('coverage_amount', 0.0) or 0.0,
+                            rejectedAmount=0.0,  # Calculate based on decision
+                            breakdown=ClaimBreakdown(
+                                approved=[],
+                                rejected=[]
+                            ),
+                            keyPolicyReferences=[
+                                PolicyReference(title=clause, note="Relevant policy clause")
+                                for clause in decision_data.get('applicable_clauses', [])[:3]
+                            ],
+                            summary=decision_data.get('reasoning', ['Decision processed'])[0] if decision_data.get('reasoning') else "Claim processed successfully"
+                        )
+                        answers.append(structured_response)
+                        
+                    elif query_type == "INSURANCE_POLICY_INFO":
+                        policy_response = await decision_engine.get_policy_info(question, retrieved_docs)
+                        answers.append(policy_response)
+                        
+                    else:
+                        general_response = await decision_engine.get_general_document_answer(question, retrieved_docs, domain)
+                        answers.append(general_response)
+                    
+                    logger.info(f"✅ Question {i} processed successfully")
+                    
+                except Exception as question_error:
+                    logger.error(f"❌ Error processing question {i}: {question_error}")
+                    answers.append(GeneralDocumentResponse(
+                        query_type="ERROR",
+                        domain="unknown",
+                        answer=f"Error processing question: {str(question_error)}",
+                        confidence="low",
+                        source_documents=[],
+                        reasoning=f"Processing error: {str(question_error)}"
+                    ))
+            
+            processing_time = time.time() - start_time
+            
+            return EnhancedHackRxResponse(
+                success=True,
+                processing_time_seconds=processing_time,
+                timestamp=datetime.now().isoformat(),
+                message=f"Successfully processed {len(request.questions)} questions in {processing_time:.2f}s",
+                answers=answers
+            )
+            
+        finally:
+            # Cleanup temporary file
+            try:
+                if os.path.exists(temp_file.name):
+                    os.unlink(temp_file.name)
+                    logger.info(f"🗑️ Cleaned up temporary file: {temp_file.name}")
+            except Exception as cleanup_error:
+                logger.warning(f"⚠️ Failed to cleanup temporary file: {cleanup_error}")
+    
     except Exception as e:
-        logger.error(f"❌ Error clearing cache: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        processing_time = time.time() - start_time
+        logger.error(f"❌ HackRx endpoint error: {e}")
+        
+        return EnhancedHackRxResponse(
+            success=False,
+            processing_time_seconds=processing_time,
+            timestamp=datetime.now().isoformat(),
+            message=f"Processing failed: {str(e)}",
+            answers=[]
+        )
 
-# Error handlers
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """Enhanced HTTP exception handler."""
-    logger.warning(f"⚠️ HTTP {exc.status_code}: {exc.detail} - {request.url}")
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": exc.detail,
-            "status_code": exc.status_code,
-            "timestamp": datetime.now().isoformat(),
-            "path": str(request.url)
-        }
-    )
+@app.get("/sessions", tags=["Session Management"])
+async def list_active_sessions(token: str = Depends(verify_bearer_token)):
+    """List all active sessions with their details."""
+    current_time = time.time()
+    session_info = []
+    
+    for session_id, (session, timestamp) in ACTIVE_SESSIONS.items():
+        age_seconds = current_time - timestamp
+        session_info.append({
+            "session_id": session_id,
+            "domain": session.document_domain,
+            "document_count": len(session.processed_files),
+            "chunk_count": len(session.documents),
+            "age_seconds": int(age_seconds),
+            "expires_in_seconds": int(SESSION_TTL - age_seconds)
+        })
+    
+    return {
+        "active_sessions": len(ACTIVE_SESSIONS),
+        "cache_entries": len(DOCUMENT_CACHE),
+        "sessions": session_info
+    }
 
-@app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    """Enhanced general exception handler."""
-    logger.error(f"❌ Unhandled exception: {str(exc)} - {request.url}")
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "message": str(exc),
-            "timestamp": datetime.now().isoformat(),
-            "path": str(request.url)
-        }
-    )
+@app.delete("/sessions/{session_id}", tags=["Session Management"])
+async def delete_session(session_id: str, token: str = Depends(verify_bearer_token)):
+    """Manually delete a specific session."""
+    if session_id in ACTIVE_SESSIONS:
+        session, timestamp = ACTIVE_SESSIONS.pop(session_id)
+        await session.async_cleanup()
+        return {"message": f"Session {session_id} deleted successfully"}
+    else:
+        raise HTTPException(status_code=404, detail="Session not found")
 
-# ENHANCED: Main entry point
+@app.post("/sessions/cleanup", tags=["Session Management"])
+async def manual_cleanup(token: str = Depends(verify_bearer_token)):
+    """Manually trigger cleanup of expired sessions and cache."""
+    start_cleanup_time = time.time()
+    
+    # Cleanup expired cache
+    await cleanup_expired_cache()
+    
+    # Cleanup expired sessions
+    current_time = time.time()
+    expired_sessions = [
+        session_id for session_id, (session, timestamp) in ACTIVE_SESSIONS.items()
+        if current_time - timestamp > SESSION_TTL
+    ]
+    
+    for session_id in expired_sessions:
+        session, _ = ACTIVE_SESSIONS.pop(session_id)
+        await session.async_cleanup()
+    
+    cleanup_time = time.time() - start_cleanup_time
+    
+    return {
+        "message": "Manual cleanup completed",
+        "expired_sessions_removed": len(expired_sessions),
+        "remaining_sessions": len(ACTIVE_SESSIONS),
+        "cache_entries": len(DOCUMENT_CACHE),
+        "cleanup_time_seconds": round(cleanup_time, 2)
+    }
+
 if __name__ == "__main__":
     import uvicorn
     
-    # Configure logging for development
-    logging.basicConfig(
-        level=logging.INFO,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    
-    # Get configuration from environment
+    port = int(os.getenv("PORT", 8080))
     host = os.getenv("HOST", "0.0.0.0")
-    port = int(os.getenv("PORT", 8000))
-    workers = int(os.getenv("WORKERS", 1))
     
-    logger.info(f"🚀 Starting Enhanced RAG API on {host}:{port}")
+    logger.info(f"🚀 Starting Enhanced Document Processing API on {host}:{port}")
     
-    if workers > 1:
-        # Use gunicorn for production with multiple workers
-        uvicorn.run(
-            "main:app",
-            host=host,
-            port=port,
-            workers=workers,
-            log_level="info",
-            access_log=True
-        )
-    else:
-        # Single worker for development
-        uvicorn.run(
-            app,
-            host=host,
-            port=port,
-            log_level="info",
-            access_log=True,
-            reload=False  # Disable reload in production
-        )
+    uvicorn.run(
+        "main:app",
+        host=host,
+        port=port,
+        reload=False,  # Disable reload in production
+        workers=1,     # Single worker for proper session management
+        loop="asyncio",
+        log_level="info"
+    )
