@@ -1,4 +1,5 @@
 import os
+
 # Performance optimization
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 os.environ["CHROMA_TELEMETRY"] = "False"
@@ -56,6 +57,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
+
 logger = logging.getLogger(__name__)
 
 # Global variables
@@ -105,7 +107,7 @@ class SemanticQueryCache:
         self.query_embeddings = LRUCache(maxsize=max_size)
         self.similarity_threshold = similarity_threshold
         self._access_times = {}
-        
+    
     def _get_query_embedding(self, query: str) -> Optional[np.ndarray]:
         """Get or compute query embedding with caching"""
         if query not in self.query_embeddings:
@@ -122,7 +124,7 @@ class SemanticQueryCache:
         query_emb = self._get_query_embedding(query)
         if query_emb is None:
             return None
-            
+        
         for cached_query in self.cache.keys():
             if cached_query == query:
                 continue
@@ -177,11 +179,11 @@ class OptimizedOpenAIClient:
         self.client = None
         self.prompt_cache = TTLCache(maxsize=1000, ttl=600)  # 10-minute cache
         self.rate_limit_delay = 1.0
-        
+    
     async def initialize(self, api_key: str):
         """Initialize the OpenAI client"""
         self.client = AsyncOpenAI(api_key=api_key)
-        
+    
     def _get_prompt_hash(self, messages: List[Dict], **kwargs) -> str:
         """Generate hash for prompt caching"""
         prompt_data = {
@@ -211,7 +213,6 @@ class OptimizedOpenAIClient:
                     max_tokens=kwargs.get("max_tokens", 1000),
                     model=kwargs.get("model", "gpt-4o")
                 )
-                
                 result = response.choices[0].message.content
                 # Cache successful response
                 self.prompt_cache[prompt_hash] = result
@@ -272,11 +273,12 @@ class TokenOptimizedProcessor:
         if cache_key in EMBEDDING_CACHE:
             return EMBEDDING_CACHE[cache_key]
         
-        global embedding_model
-        if embedding_model is None:
-            raise ValueError("Embedding model not initialized")
+        # FIXED: Use query_embedding_model instead of embedding_model
+        global query_embedding_model
+        if query_embedding_model is None:
+            raise ValueError("Query embedding model not initialized")
         
-        embedding = embedding_model.encode(text, convert_to_tensor=False)
+        embedding = query_embedding_model.encode(text, convert_to_tensor=False)
         EMBEDDING_CACHE[cache_key] = embedding
         return embedding
     
@@ -299,7 +301,6 @@ class TokenOptimizedProcessor:
         # Build context within budget
         context_parts = []
         token_budget = max_tokens
-        
         for doc, relevance, tokens, efficiency in doc_scores:
             if tokens <= token_budget:
                 context_parts.append(doc.page_content)
@@ -344,12 +345,13 @@ class SemanticDomainDetector:
     
     def initialize_embeddings(self):
         """Pre-compute domain embeddings"""
-        global embedding_model
-        if embedding_model is None:
+        # FIXED: Use query_embedding_model instead of embedding_model
+        global query_embedding_model
+        if query_embedding_model is None:
             return
         
         for domain, description in self.domain_descriptions.items():
-            self.domain_embeddings[domain] = embedding_model.encode(description, convert_to_tensor=False)
+            self.domain_embeddings[domain] = query_embedding_model.encode(description, convert_to_tensor=False)
         
         logger.info(f"✅ Initialized embeddings for {len(self.domain_embeddings)} domains")
     
@@ -362,7 +364,8 @@ class SemanticDomainDetector:
         combined_content = ' '.join([doc.page_content for doc in documents[:5]])[:2000]  # Limit for performance
         
         try:
-            content_embedding = embedding_model.encode(combined_content, convert_to_tensor=False)
+            # FIXED: Use query_embedding_model instead of embedding_model
+            content_embedding = query_embedding_model.encode(combined_content, convert_to_tensor=False)
             
             # Calculate similarities to each domain
             domain_scores = {}
@@ -509,7 +512,7 @@ class EnhancedRAGSystem:
         self.processed_files = []
         self.token_processor = TokenOptimizedProcessor()
         self._processing_lock = asyncio.Lock()
-        
+    
     async def __aenter__(self):
         return self
     
@@ -575,6 +578,7 @@ class EnhancedRAGSystem:
                 
                 self.documents = await asyncio.to_thread(text_splitter.split_documents, raw_documents)
                 self.documents = [doc for doc in self.documents if len(doc.page_content.strip()) > 50]
+                
                 self.document_hash = self.calculate_document_hash(self.documents)
                 self.processed_files = [os.path.basename(fp) for fp in file_paths]
                 
@@ -645,17 +649,16 @@ class EnhancedRAGSystem:
         try:
             # Parallel retrieval from multiple sources
             tasks = []
-            
             if self.vector_store:
                 tasks.append(asyncio.to_thread(
-                    self.vector_store.similarity_search_with_score, 
-                    query, 
+                    self.vector_store.similarity_search_with_score,
+                    query,
                     k=min(top_k * 2, 20)  # Get more candidates for reranking
                 ))
             
             if self.bm25_retriever:
                 tasks.append(asyncio.to_thread(
-                    self.bm25_retriever.get_relevant_documents, 
+                    self.bm25_retriever.get_relevant_documents,
                     query
                 ))
             
@@ -723,6 +726,7 @@ class EnhancedRAGSystem:
             scored_docs.sort(key=lambda x: x[1], reverse=True)
             
             reranked_docs, reranked_scores = zip(*scored_docs) if scored_docs else ([], [])
+            
             return list(reranked_docs), list(reranked_scores)
             
         except Exception as e:
@@ -746,13 +750,13 @@ class UniversalDecisionEngine:
             "processing": "Processed with {processing_method} approach"
         }
     
-    def calculate_confidence_score(self, 
-                                 similarity_scores: List[float], 
+    def calculate_confidence_score(self,
+                                 similarity_scores: List[float],
                                  query_match_quality: float,
                                  domain_confidence: float = 1.0) -> float:
         """Enhanced confidence calculation with domain awareness"""
-        
         cache_key = f"{hash(tuple(similarity_scores))}_{query_match_quality}_{domain_confidence}"
+        
         if cache_key in self.confidence_cache:
             return self.confidence_cache[cache_key]
         
@@ -772,19 +776,19 @@ class UniversalDecisionEngine:
                 0.15 * score_consistency +
                 0.10 * domain_confidence
             )
+            
+            confidence = min(1.0, max(0.0, confidence))
         
-        confidence = min(1.0, max(0.0, confidence))
         self.confidence_cache[cache_key] = confidence
         return confidence
     
-    def generate_reasoning_chain(self, 
+    def generate_reasoning_chain(self,
                                query: str,
                                retrieved_docs: List[Document],
                                domain: str,
                                confidence: float,
                                processing_method: str = "semantic_search") -> List[str]:
         """Generate explainable reasoning chain"""
-        
         reasoning = []
         
         # Query analysis
@@ -829,15 +833,14 @@ class UniversalDecisionEngine:
         key_terms = [word for word in words if word not in stop_words and len(word) > 2]
         return key_terms[:10]  # Limit for performance
     
-    async def process_query(self, 
-                          query: str, 
+    async def process_query(self,
+                          query: str,
                           retrieved_docs: List[Document],
                           similarity_scores: List[float],
                           domain: str,
                           domain_confidence: float = 1.0,
                           query_type: str = "general") -> Dict[str, Any]:
         """Universal query processing"""
-        
         if not retrieved_docs:
             return self._empty_response(query, domain)
         
@@ -914,7 +917,6 @@ class UniversalDecisionEngine:
     
     async def _generate_general_response(self, query: str, context: str, domain: str, reasoning: List[str]) -> str:
         """Generate general response using optimized LLM call"""
-        
         prompt = f"""You are an expert document analyst specializing in {domain} content. Provide a clear, accurate answer based solely on the provided context.
 
 CONTEXT:
@@ -942,16 +944,13 @@ ANSWER:"""
                 max_tokens=1500,
                 temperature=0.1
             )
-            
             return response
-            
         except Exception as e:
             logger.error(f"❌ LLM generation error: {e}")
             return f"Error generating response: {str(e)}"
     
     async def _generate_structured_response(self, query: str, context: str, domain: str, reasoning: List[str]) -> str:
         """Generate structured analysis response"""
-        
         prompt = f"""Analyze the following {domain} document content and provide a structured response to the query.
 
 CONTEXT:
@@ -980,9 +979,7 @@ STRUCTURED ANALYSIS:"""
                 max_tokens=2000,
                 temperature=0.1
             )
-            
             return response
-            
         except Exception as e:
             logger.error(f"❌ Structured analysis error: {e}")
             return f"Error generating structured analysis: {str(e)}"
@@ -990,7 +987,6 @@ STRUCTURED ANALYSIS:"""
     def _assess_query_match_quality(self, query: str, retrieved_docs: List[Document]) -> float:
         """Assess how well retrieved documents match the query"""
         query_terms = set(self._extract_key_terms(query))
-        
         if not query_terms:
             return 0.5
         
@@ -1027,7 +1023,6 @@ class EnhancedSessionManager:
             for session_id in expired_sessions:
                 session_obj = ACTIVE_SESSIONS.pop(session_id)
                 cleanup_tasks.append(session_obj.get_data().cleanup())
-            
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
             
             if LOG_VERBOSE:
@@ -1037,7 +1032,6 @@ class EnhancedSessionManager:
         if document_hash in ACTIVE_SESSIONS:
             session_obj = ACTIVE_SESSIONS[document_hash]
             session = session_obj.get_data()  # This updates access time
-            
             if LOG_VERBOSE:
                 logger.info(f"♻️ Reusing session: {document_hash}")
             return session
@@ -1072,7 +1066,6 @@ class UniversalURLDownloader:
                 follow_redirects=True,
                 headers={'User-Agent': 'Mozilla/5.0 (compatible; DocumentProcessor/2.0)'}
             ) as client:
-                
                 if LOG_VERBOSE:
                     logger.info(f"📥 Downloading from: {download_url}")
                 
@@ -1119,7 +1112,6 @@ class UniversalURLDownloader:
                     download_url = url.replace('?dl=0', '?dl=1')
                 else:
                     download_url = url
-                
                 path_parts = parsed.path.split('/')
                 if path_parts and path_parts[-1]:
                     filename = path_parts[-1]
@@ -1239,8 +1231,8 @@ async def lifespan(app: FastAPI):
             for session_obj in ACTIVE_SESSIONS.values():
                 cleanup_tasks.append(session_obj.get_data().cleanup())
             await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+            ACTIVE_SESSIONS.clear()
         
-        ACTIVE_SESSIONS.clear()
         logger.info("🧹 Application shutdown complete")
 
 async def initialize_components():
@@ -1362,7 +1354,6 @@ async def request_logging_middleware(request: Request, call_next):
     
     # Add performance header
     response.headers["X-Process-Time"] = str(process_time)
-    
     return response
 
 # ================================
@@ -1429,7 +1420,7 @@ async def health_check():
         }
         
         # Determine overall status
-        all_loaded = all(status == "loaded" or status == "optimized" or status == "initialized" 
+        all_loaded = all(status == "loaded" or status == "optimized" or status == "initialized"
                         for status in components.values())
         status = "healthy" if all_loaded else "degraded"
         
@@ -1485,7 +1476,6 @@ async def get_performance_metrics():
             current_time = time.time()
             total_age = 0
             domain_counts = defaultdict(int)
-            
             for session_obj in ACTIVE_SESSIONS.values():
                 session = session_obj.get_data()
                 domain_counts[session.domain] += 1
@@ -1506,7 +1496,7 @@ async def get_performance_metrics():
             "domains_configured": list(DOMAIN_CONFIGS.keys()),
             "optimizations_active": [
                 "Semantic similarity caching",
-                "Parallel document processing", 
+                "Parallel document processing",
                 "Token-optimized context generation",
                 "Cross-encoder reranking",
                 "Domain-adaptive chunking",
@@ -1540,7 +1530,6 @@ async def upload_and_process(
         async def save_file(file: UploadFile) -> Optional[str]:
             if not file.filename:
                 return None
-            
             file_ext = os.path.splitext(file.filename)[1].lower()
             if file_ext not in {'.pdf', '.docx', '.txt'}:
                 return None
@@ -1637,6 +1626,7 @@ async def upload_and_process(
         logger.error(f"❌ Upload processing error: {e}")
         logger.error(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Processing error: {str(e)}")
+    
     finally:
         # Cleanup temp files
         cleanup_tasks = [cleanup_temp_file(temp_file) for temp_file in temp_files if temp_file]
@@ -1758,7 +1748,6 @@ async def hackrx_batch_processing(
         processing_time = time.time() - start_time
         logger.error(f"❌ [{request_id}] HackRx error: {e}")
         logger.error(traceback.format_exc())
-        
         return HackRxResponse(
             success=False,
             processing_time_seconds=processing_time,
@@ -1776,7 +1765,6 @@ async def process_single_question(
     request_id: str
 ) -> DocumentResponse:
     """Process a single question with caching and optimization"""
-    
     start_time = time.time()
     
     try:
@@ -1866,7 +1854,7 @@ async def process_single_query(
         # Check if we have any active sessions
         if not ACTIVE_SESSIONS:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="No active document sessions. Please upload documents first using /upload endpoint."
             )
         
@@ -1951,7 +1939,7 @@ async def list_active_sessions(bearer_token: str = Depends(verify_bearer_token))
             total_cache_entries=len(EMBEDDING_CACHE) + len(RESPONSE_CACHE) + len(SEMANTIC_CACHE.cache),
             performance_optimizations=[
                 "🎯 Semantic similarity caching with query embedding",
-                "⚡ Parallel document processing pipeline", 
+                "⚡ Parallel document processing pipeline",
                 "🧠 Token-optimized context generation",
                 "🔄 Cross-encoder reranking for accuracy",
                 "📊 Domain-adaptive chunking strategies",
@@ -2049,7 +2037,7 @@ async def clear_all_caches(bearer_token: str = Depends(verify_bearer_token)):
             "message": "All caches cleared successfully",
             "cleared_caches": [
                 "embedding_cache",
-                "response_cache", 
+                "response_cache",
                 "semantic_query_cache",
                 "openai_prompt_cache"
             ],
