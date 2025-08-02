@@ -180,11 +180,11 @@ class IntelligentTextSplitter:
             "\n\nClause ",  # Legal clauses
             "\n\nSection ",  # Sections
             "\n\nArticle ",  # Articles
-            "\n\n",      # Double newlines
-            "\n",        # Single newlines
-            ". ",        # Sentences
-            " ",         # Words
-            ""           # Characters
+            "\n\n",       # Double newlines
+            "\n",         # Single newlines
+            ". ",         # Sentences
+            " ",          # Words
+            ""            # Characters
         ]
         
         # Section markers for metadata extraction
@@ -195,7 +195,7 @@ class IntelligentTextSplitter:
             r'(?i)^([IVX]+\.)\s+',   # Roman numerals
             r'(?i)^(\([a-z]\))\s+',  # (a) style numbering
         ]
-
+    
     def split_documents(self, documents: List[Document]) -> List[Document]:
         """Split documents with enhanced section awareness"""
         all_chunks = []
@@ -203,7 +203,7 @@ class IntelligentTextSplitter:
             chunks = self._split_single_document(doc)
             all_chunks.extend(chunks)
         return all_chunks
-
+    
     def _split_single_document(self, document: Document) -> List[Document]:
         """Split single document with section-aware chunking"""
         text = document.page_content
@@ -221,7 +221,7 @@ class IntelligentTextSplitter:
         else:
             # Fallback to enhanced recursive splitting
             return self._enhanced_recursive_split(document)
-
+    
     def _identify_sections(self, text: str) -> List[Dict[str, Any]]:
         """Identify document sections using patterns"""
         sections = []
@@ -251,7 +251,7 @@ class IntelligentTextSplitter:
             sections = [{"header": "Document", "content": text, "start_line": 0}]
         
         return sections
-
+    
     def _is_section_header(self, line: str) -> bool:
         """Check if a line is likely a section header"""
         if not line.strip():
@@ -262,15 +262,15 @@ class IntelligentTextSplitter:
                 return True
         
         # Additional heuristics
-        if (len(line) < 100 and 
-            (line.isupper() or 
-             line.endswith(':') or 
-             re.match(r'^\d+\.', line) or 
+        if (len(line) < 100 and
+            (line.isupper() or
+             line.endswith(':') or
+             re.match(r'^\d+\.', line) or
              re.match(r'^[A-Z][^.]*$', line))):
             return True
         
         return False
-
+    
     def _chunk_section(self, section: Dict[str, Any], base_metadata: Dict) -> List[Document]:
         """Chunk a single section while preserving context"""
         header = section["header"]
@@ -322,7 +322,7 @@ class IntelligentTextSplitter:
             ))
         
         return chunks
-
+    
     def _classify_section_type(self, header: str) -> str:
         """Classify the type of section based on header"""
         header_lower = header.lower()
@@ -339,7 +339,7 @@ class IntelligentTextSplitter:
             return "procedure"
         else:
             return "general"
-
+    
     def _enhanced_recursive_split(self, document: Document) -> List[Document]:
         """Enhanced recursive splitting as fallback"""
         splitter = RecursiveCharacterTextSplitter(
@@ -370,7 +370,7 @@ class RedisCache:
     
     def __init__(self):
         self.redis = None
-
+    
     async def initialize(self):
         """Initialize Redis connection with connection pooling"""
         try:
@@ -381,13 +381,14 @@ class RedisCache:
                 connection_pool_class_kwargs={"max_connections": 20},
                 decode_responses=True
             )
+            
             # Test connection
             await self.redis.ping()
             logger.info("✅ Redis cache initialized successfully")
         except Exception as e:
             logger.warning(f"⚠️ Redis not available, falling back to memory cache: {e}")
             self.redis = None
-
+    
     async def get_cached_response(self, query_hash: str) -> Optional[Dict]:
         """Get cached response from Redis"""
         if not self.redis:
@@ -398,7 +399,7 @@ class RedisCache:
         except Exception as e:
             logger.warning(f"⚠️ Redis get error: {e}")
             return None
-
+    
     async def cache_response(self, query_hash: str, response: dict, ttl: int = 300):
         """Cache response in Redis"""
         if not self.redis:
@@ -407,7 +408,7 @@ class RedisCache:
             await self.redis.setex(f"response:{query_hash}", ttl, json.dumps(response, default=str))
         except Exception as e:
             logger.warning(f"⚠️ Redis cache error: {e}")
-
+    
     async def clear_cache(self):
         """Clear all cached responses"""
         if not self.redis:
@@ -429,7 +430,7 @@ class OptimizedEmbeddingService:
         self.embedding_cache = {}
         self.batch_queue = []
         self.processing_batch = False
-
+    
     async def get_embeddings_batch(self, texts: List[str]) -> List[np.ndarray]:
         """Process embeddings in optimized batches"""
         # Check cache first
@@ -455,11 +456,11 @@ class OptimizedEmbeddingService:
                 show_progress_bar=False,
                 convert_to_numpy=True
             )
-            
-            # Cache new embeddings
-            for text, embedding in zip(uncached_texts, new_embeddings):
-                text_hash = hashlib.md5(text.encode()).hexdigest()
-                self.embedding_cache[text_hash] = embedding
+        
+        # Cache new embeddings
+        for text, embedding in zip(uncached_texts, new_embeddings):
+            text_hash = hashlib.md5(text.encode()).hexdigest()
+            self.embedding_cache[text_hash] = embedding
         
         # Reconstruct full embedding list in original order
         result_embeddings = [None] * len(texts)
@@ -473,13 +474,14 @@ class OptimizedEmbeddingService:
             result_embeddings[i] = embedding
         
         return result_embeddings
-
+    
     async def get_query_embedding(self, query: str) -> np.ndarray:
         """Get single query embedding with caching"""
         if not base_sentence_model:
             return np.zeros(384)  # Return zero vector if model not loaded
         
         query_hash = hashlib.md5(query.encode()).hexdigest()
+        
         if query_hash in self.embedding_cache:
             return self.embedding_cache[query_hash]
         
@@ -504,7 +506,7 @@ class OptimizedOpenAIClient:
         self.prompt_cache = TTLCache(maxsize=1000, ttl=600)  # 10-minute cache
         self.rate_limit_delay = 1.0
         self.connection_pool = None
-
+    
     async def initialize(self, api_key: str):
         """Initialize the OpenAI client with connection pooling"""
         try:
@@ -520,7 +522,7 @@ class OptimizedOpenAIClient:
         except Exception as e:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             raise
-
+    
     def _get_prompt_hash(self, messages: List[Dict], **kwargs) -> str:
         """Generate hash for prompt caching"""
         prompt_data = {
@@ -529,8 +531,9 @@ class OptimizedOpenAIClient:
             "temperature": kwargs.get("temperature", 0.1),
             "max_tokens": kwargs.get("max_tokens", 1000)
         }
+        
         return hashlib.md5(json.dumps(prompt_data, sort_keys=True).encode()).hexdigest()
-
+    
     async def optimized_completion(self, messages: List[Dict], **kwargs) -> str:
         """Optimized completion with caching and retry logic"""
         if not self.client:
@@ -607,25 +610,53 @@ async def initialize_components():
         
         # Initialize Pinecone connection
         try:
-            pinecone.init(
-                api_key=PINECONE_API_KEY,
-                environment=PINECONE_ENVIRONMENT
-            )
-            logger.info("✅ Pinecone connection initialized")
+            # Updated Pinecone initialization for newer versions
+            import pinecone
             
-            # Setup Pinecone index
-            index_name = PINECONE_INDEX_NAME
-            if index_name not in pinecone.list_indexes():
-                logger.info(f"📊 Creating Pinecone index: {index_name}")
-                pinecone.create_index(
-                    name=index_name,
-                    dimension=384,
-                    metric="cosine"
+            # Check if using new Pinecone client
+            try:
+                from pinecone import Pinecone as PineconeClient
+                pc = PineconeClient(api_key=PINECONE_API_KEY)
+                index_name = PINECONE_INDEX_NAME
+                
+                # Check if index exists
+                existing_indexes = [index.name for index in pc.list_indexes()]
+                if index_name not in existing_indexes:
+                    logger.info(f"📊 Creating Pinecone index: {index_name}")
+                    pc.create_index(
+                        name=index_name,
+                        dimension=384,
+                        metric="cosine",
+                        spec={
+                            "serverless": {
+                                "cloud": "aws",
+                                "region": "us-east-1"
+                            }
+                        }
+                    )
+                
+                pinecone_index = pc.Index(index_name)
+                logger.info("✅ Pinecone index setup complete")
+                
+            except ImportError:
+                # Fallback to older Pinecone version
+                pinecone.init(
+                    api_key=PINECONE_API_KEY,
+                    environment=PINECONE_ENVIRONMENT
                 )
-            
-            pinecone_index = pinecone.Index(index_name)
-            logger.info("✅ Pinecone index setup complete")
-            
+                
+                index_name = PINECONE_INDEX_NAME
+                if index_name not in pinecone.list_indexes():
+                    logger.info(f"📊 Creating Pinecone index: {index_name}")
+                    pinecone.create_index(
+                        name=index_name,
+                        dimension=384,
+                        metric="cosine"
+                    )
+                
+                pinecone_index = pinecone.Index(index_name)
+                logger.info("✅ Pinecone index setup complete")
+                
         except Exception as e:
             logger.error(f"❌ Pinecone initialization failed: {e}")
             pinecone_index = None
@@ -690,7 +721,7 @@ class TokenOptimizedProcessor:
             'context_reserve': 4000,
             'prompt_overhead': 1000
         }
-
+    
     @lru_cache(maxsize=1000)
     def estimate_tokens(self, text: str) -> int:
         """Better token estimation for various content types"""
@@ -702,7 +733,7 @@ class TokenOptimizedProcessor:
         # Better estimate for insurance docs (more complex vocabulary)
         avg_chars_per_token = 3.8
         return max(1, int(len(text) / avg_chars_per_token))
-
+    
     def calculate_relevance_score(self, doc: Document, query: str) -> float:
         """Calculate document relevance using cached embeddings"""
         try:
@@ -714,15 +745,15 @@ class TokenOptimizedProcessor:
             
             doc_embedding = self._get_cached_embedding(doc.page_content[:512])
             query_embedding = self._get_cached_embedding(query)
-            return float(util.cos_sim(doc_embedding, query_embedding)[0][0])
             
+            return float(util.cos_sim(doc_embedding, query_embedding)[0][0])
         except Exception as e:
             logger.warning(f"⚠️ Error calculating relevance: {e}")
             # Fallback to keyword matching
             query_terms = set(query.lower().split())
             doc_terms = set(doc.page_content.lower().split())
             return len(query_terms.intersection(doc_terms)) / max(len(query_terms), 1)
-
+    
     @lru_cache(maxsize=5000)
     def _get_cached_embedding(self, text: str) -> np.ndarray:
         """Get cached embedding for text"""
@@ -738,7 +769,7 @@ class TokenOptimizedProcessor:
         embedding = base_sentence_model.encode(text, convert_to_tensor=False)
         EMBEDDING_CACHE[cache_key] = embedding
         return embedding
-
+    
     def optimize_context_intelligently(self, documents: List[Document], query: str, max_tokens: int = 4000) -> str:
         """Enhanced context optimization with section-awareness"""
         if not documents:
@@ -792,14 +823,13 @@ class TokenOptimizedProcessor:
                 
                 context_parts.append(doc.page_content)
                 token_budget -= tokens
-                
             elif token_budget > 200:  # Partial inclusion
                 partial_content = self._truncate_intelligently(doc.page_content, token_budget)
                 context_parts.append(partial_content)
                 break
         
         return "\n\n".join(context_parts)
-
+    
     def _truncate_intelligently(self, content: str, max_tokens: int) -> str:
         """Intelligently truncate content preserving important parts"""
         max_chars = max_tokens * 4
@@ -834,7 +864,7 @@ class SemanticDomainDetector:
             "business": "business corporate strategy management operations marketing sales human resources organizational development project management leadership team collaboration productivity efficiency",
             "general": "general information document content text data knowledge base manual guide instructions reference material information overview summary"
         }
-
+    
     def initialize_embeddings(self):
         """Pre-compute domain embeddings"""
         global base_sentence_model
@@ -848,7 +878,7 @@ class SemanticDomainDetector:
             logger.info(f"✅ Initialized embeddings for {len(self.domain_embeddings)} domains")
         except Exception as e:
             logger.error(f"❌ Failed to initialize domain embeddings: {e}")
-
+    
     def detect_domain(self, documents: List[Document]) -> Tuple[str, float]:
         """Enhanced domain detection with better content analysis"""
         if not documents:
@@ -905,7 +935,7 @@ class SemanticDomainDetector:
         except Exception as e:
             logger.warning(f"⚠️ Error in domain detection: {e}")
             return self._fallback_domain_detection(documents)
-
+    
     def _fallback_domain_detection(self, documents: List[Document]) -> Tuple[str, float]:
         """Fallback domain detection using keywords"""
         combined_text = ' '.join([doc.page_content for doc in documents[:5]])[:2000]
@@ -946,15 +976,15 @@ class SessionObject(Generic[T]):
         self.created_at = time.time()
         self.last_accessed = time.time()
         self.ttl = ttl
-
+    
     def is_expired(self) -> bool:
         """Check if session is expired"""
         return (time.time() - self.last_accessed) > self.ttl
-
+    
     def touch(self):
         """Update last accessed time"""
         self.last_accessed = time.time()
-
+    
     def get_data(self) -> T:
         """Get data and update access time"""
         self.touch()
@@ -975,13 +1005,13 @@ class EnhancedRAGSystem:
         self.token_processor = TokenOptimizedProcessor()
         self._processing_lock = asyncio.Lock()
         self.intelligent_splitter = None
-
+    
     async def __aenter__(self):
         return self
-
+    
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.cleanup()
-
+    
     async def cleanup(self):
         """Optimized cleanup with proper resource management"""
         try:
@@ -1003,12 +1033,12 @@ class EnhancedRAGSystem:
                 
         except Exception as e:
             logger.error(f"❌ Cleanup error: {e}")
-
+    
     def calculate_document_hash(self, documents: List[Document]) -> str:
         """Calculate unique hash for documents"""
         content_sample = "".join([doc.page_content[:200] for doc in documents[:10]])
         return hashlib.sha256(content_sample.encode()).hexdigest()[:16]
-
+    
     async def process_documents(self, file_paths: List[str]) -> Dict[str, Any]:
         """Process documents with enhanced chunking and domain detection"""
         async with self._processing_lock:
@@ -1097,64 +1127,77 @@ class EnhancedRAGSystem:
             except Exception as e:
                 logger.error(f"❌ Document processing error: {e}")
                 raise HTTPException(status_code=500, detail=f"Document processing failed: {str(e)}")
-
+    
     async def _setup_enhanced_retrievers(self):
         """Setup enhanced retrievers with MMR and metadata support"""
         try:
             global embedding_model, pinecone_index
-            
+
             # Use namespace for document isolation
             namespace = f"{self.domain}_{self.document_hash}"
-            
+
             if LOG_VERBOSE:
                 logger.info(f"🔧 Setting up enhanced retrievers with namespace: {namespace}")
-            
+
             # Create vector store with Pinecone if available
             if pinecone_index and embedding_model:
-                self.vector_store = Pinecone(
-                    index=pinecone_index,
-                    embedding=embedding_model,
-                    text_key="text",
-                    namespace=namespace
-                )
-                
-                # Add documents to Pinecone if not already there
                 try:
-                    stats = pinecone_index.describe_index_stats()
-                    if namespace not in stats.get('namespaces', {}) or stats['namespaces'].get(namespace, {}).get('vector_count', 0) == 0:
-                        if LOG_VERBOSE:
-                            logger.info(f"📊 Adding {len(self.documents)} documents to Pinecone")
+                    self.vector_store = Pinecone(
+                        index=pinecone_index,
+                        embedding=embedding_model,
+                        text_key="text",
+                        namespace=namespace
+                    )
+
+                    # Check if documents exist in namespace
+                    try:
+                        stats = pinecone_index.describe_index_stats()
+                        namespace_stats = stats.get('namespaces', {}).get(namespace, {})
+                        vector_count = namespace_stats.get('vector_count', 0)
                         
-                        # Batch processing for large document sets
-                        if len(self.documents) > 50:
-                            await self._batch_add_to_pinecone()
-                        else:
-                            await asyncio.to_thread(
-                                self.vector_store.add_documents,
-                                self.documents
-                            )
-                    else:
-                        if LOG_VERBOSE:
-                            logger.info("📂 Documents already exist in Pinecone, reusing")
+                        if vector_count == 0:
+                            if LOG_VERBOSE:
+                                logger.info(f"📊 Adding {len(self.documents)} documents to Pinecone")
                             
-                except Exception as e:
-                    logger.warning(f"⚠️ Error adding documents to Pinecone: {e}")
-            
+                            # Batch processing for large document sets
+                            if len(self.documents) > 50:
+                                await self._batch_add_to_pinecone()
+                            else:
+                                await asyncio.to_thread(
+                                    self.vector_store.add_documents,
+                                    self.documents
+                                )
+                        else:
+                            if LOG_VERBOSE:
+                                logger.info(f"📂 Found {vector_count} documents in Pinecone namespace, reusing")
+                                
+                    except Exception as stats_error:
+                        logger.warning(f"⚠️ Could not check Pinecone stats, proceeding with document addition: {stats_error}")
+                        # Add documents anyway
+                        await asyncio.to_thread(
+                            self.vector_store.add_documents,
+                            self.documents[:10]  # Limit for safety
+                        )
+                        
+                except Exception as pinecone_error:
+                    logger.warning(f"⚠️ Error setting up Pinecone vector store: {pinecone_error}")
+                    self.vector_store = None
+
             # Setup enhanced BM25 retriever
             try:
                 self.bm25_retriever = await asyncio.to_thread(BM25Retriever.from_documents, self.documents)
                 # ENHANCED: Increase BM25 retrieval count
                 self.bm25_retriever.k = self.domain_config["rerank_top_k"]
-                
                 if LOG_VERBOSE:
                     logger.info(f"✅ Enhanced BM25 retriever setup complete (k={self.bm25_retriever.k})")
-                    
             except Exception as e:
                 logger.warning(f"⚠️ Error setting up BM25 retriever: {e}")
-                
+                self.bm25_retriever = None
+
         except Exception as e:
             logger.error(f"❌ Enhanced retriever setup error: {e}")
-
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+    
     async def _batch_add_to_pinecone(self):
         """Batch add documents to Pinecone for better performance"""
         batch_size = 32
@@ -1173,37 +1216,36 @@ class EnhancedRAGSystem:
                 
                 if LOG_VERBOSE:
                     logger.info(f"📊 Added batch {i//batch_size + 1}/{(total_docs-1)//batch_size + 1}")
-                    
             except Exception as e:
                 logger.warning(f"⚠️ Error adding batch {i//batch_size + 1}: {e}")
         
         if LOG_VERBOSE:
             logger.info("✅ Batch addition to Pinecone completed")
-
+    
     async def enhanced_retrieve_and_rerank(self, query: str, top_k: int = None) -> Tuple[List[Document], List[float]]:
         """ENHANCED retrieval with MMR, metadata filtering, and increased retrieval"""
         if top_k is None:
             top_k = self.domain_config["context_docs"]
-        
+
         try:
             # Check if components are loaded
             if not base_sentence_model:
                 logger.warning("⚠️ Components not loaded, returning available results")
                 available_docs = self.documents[:top_k] if self.documents else []
-                return available_docs, [0.8] * len(available_docs)  # Higher default scores
-            
+                return available_docs, [0.8] * len(available_docs)
+
             # ENHANCEMENT 1: Increased retrieval quantity
             semantic_k = self.domain_config["semantic_search_k"]
             rerank_k = self.domain_config["rerank_top_k"]
-            
+
             if LOG_VERBOSE:
                 logger.info(f"🔍 Enhanced retrieval: semantic_k={semantic_k}, rerank_k={rerank_k}, final_k={top_k}")
-            
+
             # Create embedding task immediately
             embedding_task = asyncio.create_task(
                 EMBEDDING_SERVICE.get_query_embedding(query)
             )
-            
+
             # Parallel retrieval tasks
             tasks = []
             
@@ -1218,104 +1260,152 @@ class EnhancedRAGSystem:
                         self._vector_search_optimized(query, semantic_k)
                     )
                 tasks.append(vector_task)
-            
+
             # Enhanced BM25 search task
             if self.bm25_retriever:
                 bm25_task = asyncio.create_task(
                     asyncio.to_thread(self.bm25_retriever.get_relevant_documents, query)
                 )
                 tasks.append(bm25_task)
-            
+
             # Wait for embedding and searches simultaneously
             embedding = await embedding_task
             search_results = await asyncio.gather(*tasks, return_exceptions=True) if tasks else []
-            
+
             # ENHANCEMENT 3: Enhanced merge and rerank with metadata awareness
             return await self._enhanced_merge_and_rerank(query, search_results, embedding, top_k, rerank_k)
-            
+
         except Exception as e:
             logger.error(f"❌ Enhanced retrieval error: {e}")
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
             # Fallback to basic document retrieval with better scores
             fallback_docs = self.documents[:top_k] if self.documents else []
             return fallback_docs, [0.7] * len(fallback_docs)
-
+    
     async def _mmr_vector_search(self, query: str, k: int) -> List[Tuple[Document, float]]:
         """MMR-enabled vector search for diversity"""
         try:
             if not self.vector_store:
                 return []
-            
+
             # Use MMR search for diversity
             lambda_mult = self.domain_config.get("mmr_lambda", 0.7)
-            results = await asyncio.to_thread(
-                self.vector_store.max_marginal_relevance_search_with_score,
-                query,
-                k=min(k, 30),  # Limit to prevent too many results
-                lambda_mult=lambda_mult
-            )
             
-            if LOG_VERBOSE:
-                logger.info(f"🔄 MMR search returned {len(results)} diverse results (λ={lambda_mult})")
-            
-            return results
-            
+            # Fix: Handle the actual return format from Pinecone
+            try:
+                results = await asyncio.to_thread(
+                    self.vector_store.max_marginal_relevance_search_with_score,
+                    query,
+                    k=min(k, 30),
+                    lambda_mult=lambda_mult
+                )
+                
+                # Ensure results are in correct format (Document, score)
+                formatted_results = []
+                for item in results:
+                    if isinstance(item, tuple) and len(item) == 2:
+                        doc, score = item
+                        formatted_results.append((doc, float(score)))
+                    elif hasattr(item, 'page_content'):
+                        # If it's just a document without score
+                        formatted_results.append((item, 0.8))
+                
+                if LOG_VERBOSE:
+                    logger.info(f"🔄 MMR search returned {len(formatted_results)} diverse results (λ={lambda_mult})")
+                
+                return formatted_results
+                
+            except Exception as mmr_error:
+                logger.warning(f"⚠️ MMR search failed, falling back to similarity search: {mmr_error}")
+                return await self._vector_search_optimized(query, k)
+
         except Exception as e:
             logger.error(f"❌ MMR vector search error: {e}")
-            # Fallback to regular similarity search
-            return await self._vector_search_optimized(query, k)
-
+            return []
+    
     async def _vector_search_optimized(self, query: str, k: int) -> List[Tuple[Document, float]]:
         """Optimized vector search with Pinecone"""
         try:
             if not self.vector_store:
                 return []
-            
+
             results = await asyncio.to_thread(
                 self.vector_store.similarity_search_with_score,
                 query,
                 k=min(k, 25)
             )
             
-            return results
+            # Ensure results are properly formatted
+            formatted_results = []
+            for item in results:
+                if isinstance(item, tuple) and len(item) == 2:
+                    doc, score = item
+                    # Convert distance to similarity score if needed
+                    if hasattr(score, '__float__'):
+                        similarity_score = max(0.1, min(1.0, 1.0 - float(score)))
+                    else:
+                        similarity_score = 0.7
+                    formatted_results.append((doc, similarity_score))
+                elif hasattr(item, 'page_content'):
+                    formatted_results.append((item, 0.7))
             
+            return formatted_results
+
         except Exception as e:
             logger.error(f"❌ Vector search error: {e}")
             return []
-
+    
     async def _enhanced_merge_and_rerank(self, query: str, search_results: List, embedding: np.ndarray,
                                        top_k: int, rerank_k: int) -> Tuple[List[Document], List[float]]:
         """Enhanced merge and rerank with metadata awareness"""
         all_docs = []
         all_scores = []
         seen_content = set()  # Avoid duplicates
-        
+
         # Process vector search results
         if search_results and not isinstance(search_results[0], Exception):
             vector_results = search_results[0]
-            for doc, distance_score in vector_results:
-                content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
-                if content_hash not in seen_content:
-                    all_docs.append(doc)
-                    # Better score normalization for Pinecone - more generous scoring
-                    similarity_score = max(0.5, min(1.0, (2.5 - distance_score) / 2.5))
-                    all_scores.append(similarity_score)
-                    seen_content.add(content_hash)
-        
+            if vector_results:
+                for item in vector_results:
+                    try:
+                        if isinstance(item, tuple) and len(item) >= 2:
+                            doc, score = item[0], item[1]
+                        elif hasattr(item, 'page_content'):
+                            doc, score = item, 0.7
+                        else:
+                            continue
+                        
+                        content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+                        if content_hash not in seen_content:
+                            all_docs.append(doc)
+                            # Better score normalization
+                            similarity_score = max(0.3, min(1.0, float(score)))
+                            all_scores.append(similarity_score)
+                            seen_content.add(content_hash)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error processing vector result: {e}")
+                        continue
+
         # Process BM25 results
         if len(search_results) > 1 and not isinstance(search_results[1], Exception):
-            bm25_docs = search_results[1][:rerank_k]
-            for doc in bm25_docs:
-                content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
-                if content_hash not in seen_content:  # Avoid duplicates
-                    all_docs.append(doc)
-                    all_scores.append(0.8)  # Higher default BM25 score
-                    seen_content.add(content_hash)
-        
+            bm25_docs = search_results[1]
+            if bm25_docs:
+                for doc in bm25_docs[:rerank_k]:
+                    try:
+                        content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+                        if content_hash not in seen_content:
+                            all_docs.append(doc)
+                            all_scores.append(0.8)  # Higher default BM25 score
+                            seen_content.add(content_hash)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error processing BM25 result: {e}")
+                        continue
+
         # If no search results, use more documents from the collection
-        if not all_docs:
+        if not all_docs and self.documents:
             all_docs = self.documents[:rerank_k]
-            all_scores = [0.7] * len(all_docs)  # Higher fallback scores
-        
+            all_scores = [0.7] * len(all_docs)
+
         # ENHANCEMENT 4: Enhanced metadata-aware reranking
         if all_docs and len(all_docs) > 1 and reranker:
             try:
@@ -1325,12 +1415,11 @@ class EnhancedRAGSystem:
                 return reranked_docs[:top_k], reranked_scores[:top_k]
             except Exception as e:
                 logger.warning(f"⚠️ Enhanced reranking failed: {e}")
-        
+
         # ENHANCEMENT 5: Metadata-based final sorting if reranking unavailable
         final_docs, final_scores = self._metadata_aware_sorting(query, all_docs, all_scores)
-        
         return final_docs[:top_k], final_scores[:top_k]
-
+    
     async def _enhanced_semantic_rerank(self, query: str, documents: List[Document],
                                       initial_scores: List[float], rerank_k: int) -> Tuple[List[Document], List[float]]:
         """Enhanced semantic reranking with metadata awareness"""
@@ -1407,7 +1496,7 @@ class EnhancedRAGSystem:
         except Exception as e:
             logger.warning(f"⚠️ Enhanced reranking error: {e}")
             return documents, initial_scores
-
+    
     def _metadata_aware_sorting(self, query: str, documents: List[Document],
                               scores: List[float]) -> Tuple[List[Document], List[float]]:
         """Sort documents using metadata when reranking is unavailable"""
@@ -1450,7 +1539,7 @@ class UniversalDecisionEngine:
     def __init__(self):
         self.token_processor = TokenOptimizedProcessor()
         self.processing_cache = LRUCache(maxsize=1000)
-
+    
     def _assess_query_match_quality(self, query: str, retrieved_docs: List[Document]) -> float:
         """Assess query match quality for metadata enhancement"""
         query_terms = set(query.lower().split())
@@ -1466,7 +1555,7 @@ class UniversalDecisionEngine:
         
         avg_match = np.mean(match_scores) if match_scores else 0.5
         return min(1.0, max(0.3, avg_match))  # Ensure reasonable bounds
-
+    
     async def process_query_direct(self,
                                  query: str,
                                  retrieved_docs: List[Document],
@@ -1476,7 +1565,6 @@ class UniversalDecisionEngine:
                                  query_type: str = "general",
                                  rag_system: 'EnhancedRAGSystem' = None) -> Dict[str, Any]:
         """Process query directly without confidence thresholds"""
-        
         if not retrieved_docs:
             return self._empty_response(query, domain)
         
@@ -1530,7 +1618,7 @@ class UniversalDecisionEngine:
         except Exception as e:
             logger.error(f"❌ Query processing error: {e}")
             return self._error_response(query, domain, str(e))
-
+    
     def _empty_response(self, query: str, domain: str) -> Dict[str, Any]:
         """Generate response when no documents are retrieved"""
         return {
@@ -1544,7 +1632,7 @@ class UniversalDecisionEngine:
             "retrieved_chunks": 0,
             "processing_time": time.time()
         }
-
+    
     def _error_response(self, query: str, domain: str, error_msg: str) -> Dict[str, Any]:
         """Generate error response"""
         return {
@@ -1558,10 +1646,9 @@ class UniversalDecisionEngine:
             "retrieved_chunks": 0,
             "processing_time": time.time()
         }
-
+    
     async def _generate_enhanced_response(self, query: str, context: str, domain: str) -> str:
         """Generate response with enhanced domain-specific prompting"""
-        
         # Enhanced prompt design for better extractive behavior
         domain_instructions = self._get_domain_specific_instructions(domain)
         
@@ -1583,7 +1670,7 @@ DOCUMENT CONTEXT:
 QUESTION: {query}
 
 DETAILED ANSWER:"""
-
+        
         try:
             global openai_client
             if not openai_client:
@@ -1607,7 +1694,7 @@ DETAILED ANSWER:"""
         except Exception as e:
             logger.error(f"❌ Enhanced LLM generation error: {e}")
             return f"Error generating response: {str(e)}. The system may still be initializing."
-
+    
     def _get_domain_specific_instructions(self, domain: str) -> str:
         """Get domain-specific instructions for better prompting"""
         instructions = {
@@ -1619,6 +1706,7 @@ When analyzing insurance documents, focus on:
 - Pre-existing condition clauses
 - Premium calculations and payment terms
 - Network providers and cashless facilities
+
 Provide comprehensive answers with specific details when available.""",
             
             "legal": """
@@ -1628,6 +1716,7 @@ When analyzing legal documents, focus on:
 - Rights, obligations, and liabilities
 - Jurisdiction and governing law
 - Compliance requirements and regulations
+
 Provide detailed legal analysis with specific references when available.""",
             
             "medical": """
@@ -1637,6 +1726,7 @@ When analyzing medical documents, focus on:
 - Healthcare coverage and benefits
 - Clinical guidelines and protocols
 - Patient care instructions
+
 Provide comprehensive medical information with specific details when available.""",
             
             "financial": """
@@ -1646,6 +1736,7 @@ When analyzing financial documents, focus on:
 - Risk factors and market conditions
 - Regulatory compliance and reporting
 - Performance metrics and benchmarks
+
 Provide detailed financial analysis with specific data when available.""",
             
             "technical": """
@@ -1655,6 +1746,7 @@ When analyzing technical documents, focus on:
 - Configuration settings and parameters
 - Troubleshooting and maintenance
 - Performance metrics and standards
+
 Provide comprehensive technical information with specific details when available.""",
             
             "academic": """
@@ -1664,6 +1756,7 @@ When analyzing academic documents, focus on:
 - Data analysis and conclusions
 - Theoretical frameworks and models
 - Study limitations and future research
+
 Provide detailed academic analysis with specific findings when available.""",
             
             "business": """
@@ -1673,6 +1766,7 @@ When analyzing business documents, focus on:
 - Performance metrics and KPIs
 - Organizational structure and roles
 - Market analysis and competitive landscape
+
 Provide comprehensive business analysis with specific details when available."""
         }
         
@@ -1735,7 +1829,7 @@ class UniversalURLDownloader:
     
     def __init__(self, timeout: float = 60.0):
         self.timeout = timeout
-
+    
     async def download_from_url(self, url: str) -> Tuple[bytes, str]:
         """Download file from URL with enhanced error handling"""
         try:
@@ -1770,7 +1864,7 @@ class UniversalURLDownloader:
         except Exception as e:
             logger.error(f"❌ Unexpected download error: {str(e)}")
             raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
-
+    
     def _prepare_url_and_filename(self, url: str) -> Tuple[str, str]:
         """Prepare URL and extract filename"""
         parsed_url = urlparse(url)
@@ -1886,15 +1980,7 @@ class HackRxQuestionAnswer(BaseModel):
 
 class HackRxRunResponse(BaseModel):
     """Response model for HackRx run endpoint"""
-    document_url: str
-    total_questions: int
-    processing_time: float
-    domain: str
-    domain_confidence: float
-    session_id: str
-    results: List[HackRxQuestionAnswer]
-    status: str
-    enhanced_features: Dict[str, Any]
+    answers: List[str]
 
 class ProcessDocumentsRequest(BaseModel):
     """Request model for document processing"""
@@ -2011,7 +2097,6 @@ async def process_documents(request: ProcessDocumentsRequest):
     """Enhanced document processing endpoint"""
     start_time = time.time()
     temp_files = []
-    
     try:
         if not request.file_urls:
             raise HTTPException(status_code=400, detail="No file URLs provided")
@@ -2045,7 +2130,7 @@ async def process_documents(request: ProcessDocumentsRequest):
         if not temp_files:
             raise HTTPException(status_code=400, detail="No files could be downloaded")
         
-                # Get or create session
+        # Get or create session
         if request.session_id:
             try:
                 rag_system = await EnhancedSessionManager.get_or_create_session(request.session_id)
@@ -2102,7 +2187,6 @@ async def process_documents(request: ProcessDocumentsRequest):
 async def query_documents(request: QueryRequest):
     """Enhanced query processing endpoint"""
     start_time = time.time()
-    
     try:
         if not request.query.strip():
             raise HTTPException(status_code=400, detail="Query cannot be empty")
@@ -2169,70 +2253,48 @@ async def query_documents(request: QueryRequest):
 async def hackrx_run(request: HackRxRunRequest):
     """HackRx competition endpoint - optimized for batch processing"""
     start_time = time.time()
-    
     try:
         if not request.questions:
             raise HTTPException(status_code=400, detail="No questions provided")
-        
+
         if LOG_VERBOSE:
             logger.info(f"🏁 HackRx run: Processing {len(request.questions)} questions")
-        
+
         # Process document
         doc_request = ProcessDocumentsRequest(file_urls=[request.documents])
         doc_response = await process_documents(doc_request)
-        
         session_id = doc_response.session_id
-        
+
         # Process all questions
-        results = []
+        answers = []  # Simple list of answers as expected by the format
+        
         for i, question in enumerate(request.questions):
             try:
                 if LOG_VERBOSE:
                     logger.info(f"❓ Processing question {i+1}/{len(request.questions)}: {question[:50]}...")
-                
+
                 query_request = QueryRequest(
                     query=question,
                     session_id=session_id,
                     query_type="hackrx"
                 )
-                
+
                 query_response = await query_documents(query_request)
                 
-                results.append(HackRxQuestionAnswer(
-                    question=question,
-                    answer=query_response.answer,
-                    relevance_score=query_response.relevance_score,
-                    reasoning_chain=query_response.reasoning_chain
-                ))
-                
+                # Just append the answer string as expected
+                answers.append(query_response.answer)
+
             except Exception as e:
                 logger.warning(f"⚠️ Error processing question {i+1}: {e}")
-                results.append(HackRxQuestionAnswer(
-                    question=question,
-                    answer=f"Error processing question: {str(e)}",
-                    relevance_score=0.0,
-                    reasoning_chain=[f"Processing error: {str(e)}"]
-                ))
-        
+                answers.append(f"Error processing question: {str(e)}")
+
         processing_time = time.time() - start_time
-        
-        return HackRxRunResponse(
-            document_url=request.documents,
-            total_questions=len(request.questions),
-            processing_time=processing_time,
-            domain=doc_response.domain,
-            domain_confidence=doc_response.domain_confidence,
-            session_id=session_id,
-            results=results,
-            status="completed",
-            enhanced_features={
-                "confidence_filtering_disabled": True,
-                "intelligent_chunking": True,
-                "enhanced_retrieval": True,
-                "batch_processing": True
-            }
-        )
-        
+
+        # Return in the expected format
+        return {
+            "answers": answers
+        }
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2384,7 +2446,6 @@ async def get_system_stats():
 async def global_exception_handler(request: Request, exc: Exception):
     """Global exception handler for unhandled errors"""
     logger.error(f"❌ Unhandled exception: {exc}", exc_info=True)
-    
     return JSONResponse(
         status_code=500,
         content={
