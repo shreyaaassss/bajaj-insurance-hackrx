@@ -3,7 +3,7 @@ uvicorn[standard]==0.24.0
 python-multipart==0.0.6
 httpx==0.25.2
 langchain==0.1.20
-langchain-community==0.2.10
+langchain-community==0.0.38
 langchain-text-splitters==0.0.1
 PyMuPDF==1.23.8
 python-docx==1.1.0
