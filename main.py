@@ -1465,30 +1465,38 @@ class EnhancedRAGSystem:
             return [(doc, 0.5) for doc in self.documents[:k]]
     
     async def _merge_and_rerank(self, query: str, search_results: List, top_k: int, rerank_k: int) -> Tuple[List[Document], List[float]]:
-        """FIXED: Merge and rerank results"""
+        """FIXED: Merge and rerank results with proper format handling"""
         all_docs = []
         all_scores = []
         seen_content = set()
         
-        # Process vector search results
+        # Process vector search results (expects tuples)
         if search_results and not isinstance(search_results[0], Exception):
-            for doc, score in search_results[0]:
-                content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
-                if content_hash not in seen_content:
-                    all_docs.append(doc)
-                    # Normalize score to 0-1
-                    normalized_score = max(0.0, min(1.0, (2.0 - score) / 2.0)) if score > 1.0 else score
-                    all_scores.append(normalized_score)
-                    seen_content.add(content_hash)
+            vector_results = search_results[0]
+            if isinstance(vector_results, list) and vector_results:
+                for item in vector_results:
+                    if isinstance(item, tuple) and len(item) == 2:
+                        doc, score = item
+                        content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+                        if content_hash not in seen_content:
+                            all_docs.append(doc)
+                            # Normalize score to 0-1
+                            normalized_score = max(0.0, min(1.0, (2.0 - score) / 2.0)) if score > 1.0 else score
+                            all_scores.append(normalized_score)
+                            seen_content.add(content_hash)
         
-        # Process BM25 results
+        # Process BM25 results (expects documents only) - FIXED
         if len(search_results) > 1 and not isinstance(search_results[1], Exception):
-            for doc in search_results[1][:rerank_k]:
-                content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
-                if content_hash not in seen_content:
-                    all_docs.append(doc)
-                    all_scores.append(0.6)  # Default BM25 score
-                    seen_content.add(content_hash)
+            bm25_results = search_results[1]
+            if isinstance(bm25_results, list):
+                for doc in bm25_results[:rerank_k]:
+                    # Handle Document objects (not tuples)
+                    if hasattr(doc, 'page_content'):  # It's a Document
+                        content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+                        if content_hash not in seen_content:
+                            all_docs.append(doc)
+                            all_scores.append(0.6)  # Default BM25 score
+                            seen_content.add(content_hash)
         
         # If no results, use top documents
         if not all_docs:
@@ -1510,6 +1518,7 @@ class EnhancedRAGSystem:
         final_scores = [score for _, score in scored_docs[:top_k]]
         
         return final_docs, final_scores
+
     
     async def _semantic_rerank(self, query: str, documents: List[Document], scores: List[float], top_k: int) -> Tuple[List[Document], List[float]]:
         """FIXED: Semantic reranking"""
@@ -2001,14 +2010,24 @@ class UniversalURLDownloader:
             
             return url, filename  # Use URL as-is for Azure blob
         
-        # Google Drive URLs
+        # Google Drive URLs - FIXED
         elif 'drive.google.com' in parsed_url.netloc:
             if '/file/d/' in url:
+                # Handle sharing URL format: https://drive.google.com/file/d/FILE_ID/view
                 file_id = url.split('/file/d/')[1].split('/')[0]
-                download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
-                filename = f"google_drive_{file_id}.pdf"
+            elif 'id=' in url:
+                # Handle export URL format: https://drive.google.com/uc?export=download&id=FILE_ID
+                file_id = parse_qs(parsed_url.query).get('id', [None])[0]
             else:
-                raise HTTPException(status_code=400, detail="Invalid Google Drive URL")
+                raise HTTPException(status_code=400, detail="Invalid Google Drive URL format")
+            
+            if not file_id:
+                raise HTTPException(status_code=400, detail="Could not extract Google Drive file ID")
+            
+            # Use export download URL
+            download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
+            filename = f"google_drive_{file_id}.pdf"
+            
             return download_url, filename
         
         # Dropbox URLs
