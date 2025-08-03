@@ -2282,13 +2282,16 @@ async def list_sessions(token: str = Depends(verify_token)):
 
 if __name__ == "__main__":
     import uvicorn
+    import os
     
-    logger.info("🚀 Starting Enhanced RAG System server...")
+    # Get port from environment variable (Cloud Run requirement)
+    port = int(os.getenv("PORT", 8000))
+    
+    logger.info(f"🚀 Starting Enhanced RAG System server on port {port}...")
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-        port=8000,
+        port=port,  # Use environment port
         reload=False,
         log_level="info"
     )
-
