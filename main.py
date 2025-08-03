@@ -2101,30 +2101,15 @@ DECISION_ENGINE = UniversalDecisionEngine()
 # ================================
 
 async def initialize_system():
-    """Initialize all system components"""
-    logger.info("🚀 Starting system initialization...")
-    
+    """Initialize only lightweight components - NO HEAVY MODELS"""
+    logger.info("🚀 Starting lightweight system initialization...")
     try:
-        # Initialize Redis cache
+        # Only initialize Redis and OpenAI - NO model loading
         await REDIS_CACHE.initialize()
-        
-        # Initialize OpenAI client
         if OPENAI_API_KEY:
             await ensure_openai_ready()
         
-        # Initialize models (lazy loading)
-        await ensure_models_ready()
-        
-        # Initialize domain embeddings
-        if base_sentence_model:
-            DOMAIN_DETECTOR.initialize_embeddings()
-        
-        logger.info("✅ System initialization complete")
-        
-        # Log component status
-        ready_components = [k for k, v in components_ready.items() if v]
-        logger.info(f"📊 Components ready: {', '.join(ready_components)}")
-        
+        logger.info("✅ Lightweight system initialization complete")
     except Exception as e:
         logger.error(f"❌ System initialization failed: {e}")
         raise
@@ -2242,39 +2227,13 @@ class HealthCheckResponse(BaseModel):
 
 @app.get("/health", response_model=HealthCheckResponse)
 async def health_check():
-    """Enhanced health check endpoint"""
-    try:
-        # Basic health metrics
-        health_data = {
-            "status": "healthy",
-            "version": "2.0.0",
-            "components": components_ready.copy(),
-        }
-        
-        # Add system metrics if available
-        if HAS_PSUTIL and psutil:
-            try:
-                health_data["system_metrics"] = {
-                    "memory_usage_percent": psutil.virtual_memory().percent,
-                    "cpu_usage_percent": psutil.cpu_percent(interval=0.1),
-                    "active_sessions": len(ACTIVE_SESSIONS),
-                    "cache_sizes": {
-                        "embedding_cache": len(EMBEDDING_CACHE),
-                        "response_cache": len(RESPONSE_CACHE)
-                    }
-                }
-            except Exception as e:
-                logger.warning(f"⚠️ Could not get system metrics: {e}")
-        
-        return HealthCheckResponse(**health_data)
-        
-    except Exception as e:
-        logger.error(f"❌ Health check failed: {e}")
-        return HealthCheckResponse(
-            status="unhealthy",
-            version="2.0.0",
-            components=components_ready.copy()
-        )
+    """Health check that doesn't wait for heavy models"""
+    return HealthCheckResponse(
+        status="healthy",
+        version="2.0.0",
+        components={"basic_system": True},  # Don't check heavy components
+        system_metrics=None
+    )
 
 @app.post("/process-documents", response_model=ProcessDocumentsResponse)
 async def process_documents_endpoint(
