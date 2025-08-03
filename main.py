@@ -127,7 +127,7 @@ MAX_BATCH_SIZE = int(os.getenv("MAX_BATCH_SIZE", 128))
 TOKEN_BUFFER_PERCENT = float(os.getenv("TOKEN_BUFFER_PERCENT", 0.1))
 
 # Environment variables for API keys
-PINECONE_API_KEY = "pcsk_711NmG_Tub3XoFEp23axHP4PAdj1FYoQSf9G5oYahsVe2ZhEBe8ktiqcauGEtdQC7eCFWR"
+PINECONE_API_KEY = "pcsk_6Mka6e_FtkKSKyGdQTXe81oeLpgB41HVLQv2NUMSvHyjxuMBti1QjvFs5m1UwNc7jTqNDk"
 PINECONE_ENVIRONMENT = "us-east1-gcp"
 PINECONE_INDEX_NAME = "enhanced-rag-system"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -1492,84 +1492,101 @@ class EnhancedRAGSystem:
         try:
             logger.info("🔧 Setting up retrievers...")
             
-            # Setup vector store if available - with better error handling
-            if HAS_PINECONE and pinecone and embedding_model and PINECONE_API_KEY:
+            # ALWAYS initialize BM25 first as primary fallback
+            if self.documents:
                 try:
-                    await ensure_models_ready()
-                    namespace = f"{self.domain}_{self.document_hash}"
-                    
-                    # Check Pinecone limits before initialization
-                    try:
-                        import pinecone
-                        pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
-                        
-                        # Check if index exists and create if needed
-                        existing_indexes = pinecone.list_indexes()
-                        if PINECONE_INDEX_NAME not in existing_indexes:
-                            # Check if we can create index (pod limits)
-                            try:
-                                pinecone.create_index(
-                                    name=PINECONE_INDEX_NAME,
-                                    dimension=384,
-                                    metric="cosine",
-                                    pods=1,  # Start with minimum pods
-                                    replicas=1
-                                )
-                                logger.info("✅ Pinecone index created successfully")
-                            except Exception as create_error:
-                                if "max pods" in str(create_error).lower():
-                                    logger.warning("⚠️ Pinecone pod limit reached, using fallback storage")
-                                    components_ready["pinecone"] = False
-                                    raise create_error
-                        
-                        global pinecone_index
-                        pinecone_index = pinecone.Index(PINECONE_INDEX_NAME)
-                        components_ready["pinecone"] = True
-                        
-                        # Setup vector store
-                        self.vector_store = Pinecone(
-                            index=pinecone_index,
-                            embedding=embedding_model,
-                            text_key="text",
-                            namespace=namespace
-                        )
-                        
-                        # Add documents to vector store
-                        if self.documents:
-                            document_texts = [doc.page_content for doc in self.documents]
-                            document_metadatas = [doc.metadata for doc in self.documents]
-                            
-                            await asyncio.to_thread(
-                                self.vector_store.add_texts,
-                                texts=document_texts,
-                                metadatas=document_metadatas
-                            )
-                        
-                        logger.info(f"✅ Pinecone vector store setup complete (namespace: {namespace})")
-                        
-                    except Exception as pinecone_error:
-                        logger.warning(f"⚠️ Pinecone setup failed: {pinecone_error}")
-                        components_ready["pinecone"] = False
-                        # Continue without Pinecone
-                        
-                except Exception as e:
-                    logger.warning(f"⚠️ Vector store setup failed, continuing with BM25 only: {e}")
-                    components_ready["pinecone"] = False
-            
-            # Always setup BM25 as fallback
-            try:
-                if self.documents:
                     self.bm25_retriever = await asyncio.to_thread(
                         BM25Retriever.from_documents,
                         list(self.documents)
                     )
                     self.bm25_retriever.k = min(self.domain_config["rerank_top_k"], len(self.documents))
                     logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
-            except Exception as e:
-                logger.error(f"❌ BM25 retriever setup failed: {e}")
-                
+                except Exception as e:
+                    logger.error(f"❌ BM25 retriever setup failed: {e}")
+                    raise HTTPException(status_code=500, detail="Failed to initialize BM25 retrieval system")
+            else:
+                raise HTTPException(status_code=500, detail="No documents available for retriever setup")
+
+            # Setup vector store if available - with better error handling
+            if HAS_PINECONE and pinecone is not None and embedding_model and PINECONE_API_KEY:
+                try:
+                    await ensure_models_ready()
+                    namespace = f"{self.domain}_{self.document_hash}"
+                    
+                    # Use the global pinecone module (not the variable)
+                    import pinecone as pc_module  # Clear reference to avoid conflicts
+                    
+                    try:
+                        pc_module.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
+                        
+                        # Check if index exists and create if needed
+                        existing_indexes = pc_module.list_indexes()
+                        if PINECONE_INDEX_NAME not in existing_indexes:
+                            try:
+                                pc_module.create_index(
+                                    name=PINECONE_INDEX_NAME,
+                                    dimension=384,
+                                    metric="cosine",
+                                    pods=1,
+                                    replicas=1
+                                )
+                                logger.info("✅ Pinecone index created successfully")
+                            except Exception as create_error:
+                                if "max pods" in str(create_error).lower():
+                                    logger.warning("⚠️ Pinecone pod limit reached, using BM25 only")
+                                    components_ready["pinecone"] = False
+                                    return  # BM25 is already setup, exit gracefully
+
+                        # Setup vector store
+                        global pinecone_index
+                        pinecone_index = pc_module.Index(PINECONE_INDEX_NAME)
+                        components_ready["pinecone"] = True
+
+                        self.vector_store = Pinecone(
+                            index=pinecone_index,
+                            embedding=embedding_model,
+                            text_key="text",
+                            namespace=namespace
+                        )
+
+                        # Add documents to vector store
+                        if self.documents:
+                            document_texts = [doc.page_content for doc in self.documents]
+                            document_metadatas = [doc.metadata for doc in self.documents]
+                            await asyncio.to_thread(
+                                self.vector_store.add_texts,
+                                texts=document_texts,
+                                metadatas=document_metadatas
+                            )
+                            logger.info(f"✅ Pinecone vector store setup complete (namespace: {namespace})")
+
+                    except Exception as pinecone_error:
+                        logger.warning(f"⚠️ Pinecone setup failed: {pinecone_error}")
+                        components_ready["pinecone"] = False
+                        # BM25 is already working, continue
+
+                except Exception as e:
+                    logger.warning(f"⚠️ Vector store setup failed, using BM25 only: {e}")
+                    components_ready["pinecone"] = False
+            else:
+                logger.info("🔄 Pinecone not available, using BM25 only")
+                components_ready["pinecone"] = False
+
         except Exception as e:
             logger.error(f"❌ Retriever setup error: {e}")
+            # Final safety check - ensure BM25 exists
+            if not self.bm25_retriever and self.documents:
+                try:
+                    logger.info("🚨 Attempting emergency BM25 setup...")
+                    self.bm25_retriever = BM25Retriever.from_documents(list(self.documents))
+                    self.bm25_retriever.k = min(35, len(self.documents))
+                    logger.info("✅ Emergency BM25 retriever setup complete")
+                except Exception as fallback_error:
+                    logger.error(f"❌ Emergency BM25 setup also failed: {fallback_error}")
+                    raise HTTPException(status_code=500, detail="Complete retrieval system failure")
+            else:
+                # Re-raise original error if BM25 exists
+                raise
 
     def calculate_confidence_score(self, query: str, similarity_scores: List[float],
                                  retrieved_docs: List[Document], domain_confidence: float = 1.0) -> float:
