@@ -24,28 +24,28 @@ ENV PORT=8080
 # Set working directory
 WORKDIR /app
 
-# Copy requirements first for better caching (FIXED FILENAME)
+# Copy requirements first for better caching
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# PRE-DOWNLOAD MODELS (CRITICAL FIX - This prevents startup timeout)
-RUN python -c "
-import os
-os.environ['ANONYMIZED_TELEMETRY'] = 'False'
-os.environ['CHROMA_TELEMETRY'] = 'False'
-print('Downloading models...')
-from sentence_transformers import SentenceTransformer, CrossEncoder
-from langchain_community.embeddings import HuggingFaceEmbeddings
-print('Loading SentenceTransformer...')
-SentenceTransformer('all-MiniLM-L6-v2')
-print('Loading CrossEncoder...')
-CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2') 
-print('Loading HuggingFaceEmbeddings...')
-HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2', model_kwargs={'device': 'cpu'})
-print('All models downloaded successfully!')
+# PRE-DOWNLOAD MODELS (FIXED - Use proper escaping)
+RUN python -c "\
+import os; \
+os.environ['ANONYMIZED_TELEMETRY'] = 'False'; \
+os.environ['CHROMA_TELEMETRY'] = 'False'; \
+print('Downloading models...'); \
+from sentence_transformers import SentenceTransformer, CrossEncoder; \
+from langchain_community.embeddings import HuggingFaceEmbeddings; \
+print('Loading SentenceTransformer...'); \
+SentenceTransformer('all-MiniLM-L6-v2'); \
+print('Loading CrossEncoder...'); \
+CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2'); \
+print('Loading HuggingFaceEmbeddings...'); \
+HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2', model_kwargs={'device': 'cpu'}); \
+print('All models downloaded successfully!'); \
 "
 
-# Copy application code (FIXED FILENAME)
+# Copy application code
 COPY main.py ./main.py
 
 # Create non-root user
