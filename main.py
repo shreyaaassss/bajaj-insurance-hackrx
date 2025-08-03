@@ -2745,24 +2745,27 @@ async def download_from_google_drive(url: str) -> str:
 if __name__ == "__main__":
     import uvicorn
     
-    # Production-ready server configuration
+    # Cloud Run compatible configuration
+    port = int(os.getenv("PORT", 8080))  # ✅ Use Cloud Run's PORT
+    
     config = {
         "host": "0.0.0.0",
-        "port": 8000,
-        "workers": 1,  # Single worker for RAG systems due to memory requirements
+        "port": port,
+        "workers": 1,
         "loop": "asyncio",
         "http": "httptools",
         "log_level": "info",
         "access_log": True,
         "reload": False,
-        "timeout_keep_alive": 120,
-        "timeout_graceful_shutdown": 60
+        "timeout_keep_alive": 300,  # ✅ Increased for heavy processing
+        "timeout_graceful_shutdown": 120,  # ✅ Increased for cleanup
     }
     
-    logger.info("🚀 Starting Universal RAG System v2.0...")
+    logger.info(f"🚀 Starting Universal RAG System v2.0 on port {port}...")
     logger.info(f"📊 Configuration: {config}")
     
     try:
+        # Start the server without blocking model loading
         uvicorn.run(app, **config)
     except KeyboardInterrupt:
         logger.info("👋 Graceful shutdown initiated")
