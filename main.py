@@ -149,25 +149,25 @@ BASE_CONFIG = {
     "chunk_overlap": 200,
     "semantic_search_k": 24,
     "context_docs": 18,
-    "confidence_threshold": 0.15,  # ADAPTIVE - starts very low
+    "confidence_threshold": 0.15, # ADAPTIVE - starts very low
     "use_mmr": True,
     "mmr_lambda": 0.75,
     "use_metadata_filtering": True,
     "rerank_top_k": 35,
-    "fallback_threshold_multiplier": 0.7,  # For fallback attempts
+    "fallback_threshold_multiplier": 0.7, # For fallback attempts
     "max_fallback_docs": 30
 }
 
 # ADAPTIVE DOMAIN CONFIGS - REMOVED SPECIFIC BIASES
 ADAPTIVE_DOMAIN_CONFIGS = {
     "insurance": {
-        "confidence_adjustment": 1.1,  # Slightly higher confidence needed
-        "chunk_size_adjustment": 0.85,  # Smaller chunks
+        "confidence_adjustment": 1.1, # Slightly higher confidence needed
+        "chunk_size_adjustment": 0.85, # Smaller chunks
         "semantic_weight": 0.6
     },
     "legal": {
         "confidence_adjustment": 1.15,
-        "chunk_size_adjustment": 1.25,  # Larger chunks for legal context
+        "chunk_size_adjustment": 1.25, # Larger chunks for legal context
         "semantic_weight": 0.7
     },
     "medical": {
@@ -196,7 +196,7 @@ ADAPTIVE_DOMAIN_CONFIGS = {
         "semantic_weight": 0.6
     },
     "general": {
-        "confidence_adjustment": 0.8,  # Most lenient
+        "confidence_adjustment": 0.8, # Most lenient
         "chunk_size_adjustment": 1.0,
         "semantic_weight": 0.5
     }
@@ -258,7 +258,7 @@ def sanitize_for_json(data):
         return [sanitize_for_json(v) for v in data]
     elif isinstance(data, (np.integer, np.floating, np.bool_)):
         return convert_numpy_types(data)
-    elif hasattr(data, 'item'):  # numpy scalar
+    elif hasattr(data, 'item'): # numpy scalar
         return data.item()
     elif isinstance(data, (np.ndarray,)):
         return data.tolist()
@@ -298,7 +298,7 @@ async def verify_token(credentials: HTTPAuthorizationCredentials = Depends(secur
     return credentials.credentials
 
 # ================================
-# LAZY LOADING FOR HEAVY COMPONENTS
+# LAZY LOADING FOR HEAVY COMPONENTS - FIXED
 # ================================
 
 async def ensure_openai_ready():
@@ -316,43 +316,36 @@ async def ensure_openai_ready():
         raise HTTPException(status_code=503, detail="OpenAI API key not configured")
 
 async def ensure_models_ready():
-    """Lazy load heavy models on demand"""
+    """Load pre-downloaded models quickly"""
     global base_sentence_model, embedding_model, reranker
     
     if base_sentence_model is None:
         try:
-            logger.info("🔄 Loading sentence transformer...")
-            base_sentence_model = await asyncio.to_thread(
-                SentenceTransformer, 'all-MiniLM-L6-v2'
-            )
+            # Models are pre-downloaded in Docker, this should be fast
+            base_sentence_model = SentenceTransformer('all-MiniLM-L6-v2')
             components_ready["base_sentence_model"] = True
-            logger.info("✅ Sentence transformer loaded")
+            logger.info("✅ Sentence transformer loaded from cache")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load sentence transformer: {e}")
-
+    
     if embedding_model is None:
         try:
-            logger.info("🔄 Loading embedding model...")
             embedding_model = HuggingFaceEmbeddings(
                 model_name="all-MiniLM-L6-v2",
                 model_kwargs={'device': 'cpu'}
             )
             components_ready["embedding_model"] = True
-            logger.info("✅ Embedding model loaded")
+            logger.info("✅ Embedding model loaded from cache")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load embedding model: {e}")
-
+    
     if reranker is None:
         try:
-            logger.info("🔄 Loading reranker...")
-            reranker = await asyncio.to_thread(
-                CrossEncoder, 'cross-encoder/ms-marco-MiniLM-L-6-v2'
-            )
+            reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
             components_ready["reranker"] = True
-            logger.info("✅ Reranker loaded")
+            logger.info("✅ Reranker loaded from cache")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load reranker: {e}")
-            components_ready["reranker"] = False
 
 # ================================
 # ADAPTIVE TEXT SPLITTER - GENERALIZED
@@ -367,24 +360,24 @@ class AdaptiveTextSplitter:
         
         # Universal separators - NO domain-specific bias
         self.separators = [
-            "\n\n## ", "\n\n# ", "\n\n### ", "\n\n#### ",  # Headers
-            "\n\n", "\n", ". ", "! ", "? ", "; ", " ", ""   # General separators
+            "\n\n## ", "\n\n# ", "\n\n### ", "\n\n#### ", # Headers
+            "\n\n", "\n", ". ", "! ", "? ", "; ", " ", "" # General separators
         ]
         
         # Universal section patterns - NO domain-specific bias
         self.section_patterns = [
-            r'(?i)^([A-Z][^.:!?]*[.:])\s*$',  # Generic headers ending with . or :
-            r'(?i)^(\d+(?:\.\d+)*)\s+(.+)$',  # Numbered sections
-            r'(?i)^([IVX]+\.)\s+(.+)$',       # Roman numerals
-            r'(?i)^(\([a-zA-Z0-9]\))\s+(.+)$',  # Lettered/numbered lists
-            r'(?i)^([A-Z\s]{3,})\s*$',        # ALL CAPS headers
+            r'(?i)^([A-Z][^.:!?]*[.:])\s*$', # Generic headers ending with . or :
+            r'(?i)^(\d+(?:\.\d+)*)\s+(.+)$', # Numbered sections
+            r'(?i)^([IVX]+\.)\s+(.+)$', # Roman numerals
+            r'(?i)^(\([a-zA-Z0-9]\))\s+(.+)$', # Lettered/numbered lists
+            r'(?i)^([A-Z\s]{3,})\s*$', # ALL CAPS headers
         ]
 
     def adapt_for_content(self, documents: List[Document], detected_domain: str = "general") -> Tuple[int, int]:
         """Dynamically adapt chunk size based on content analysis"""
         if not documents:
             return self.base_chunk_size, self.base_chunk_overlap
-        
+            
         # Analyze document characteristics
         avg_paragraph_length = self._analyze_paragraph_structure(documents)
         sentence_complexity = self._analyze_sentence_complexity(documents)
@@ -398,12 +391,12 @@ class AdaptiveTextSplitter:
         adapted_size = int(self.base_chunk_size * size_adjustment)
         
         # Adjust based on content characteristics
-        if avg_paragraph_length > 300:  # Long paragraphs
+        if avg_paragraph_length > 300: # Long paragraphs
             adapted_size = int(adapted_size * 1.2)
-        elif avg_paragraph_length < 100:  # Short paragraphs
+        elif avg_paragraph_length < 100: # Short paragraphs
             adapted_size = int(adapted_size * 0.8)
             
-        if sentence_complexity > 20:  # Complex sentences
+        if sentence_complexity > 20: # Complex sentences
             adapted_size = int(adapted_size * 1.1)
             
         # Ensure reasonable bounds
@@ -419,7 +412,6 @@ class AdaptiveTextSplitter:
             
         # Adapt chunk size for content
         chunk_size, chunk_overlap = self.adapt_for_content(documents, detected_domain)
-        
         logger.info(f"📄 Adaptive chunking: size={chunk_size}, overlap={chunk_overlap}")
         
         all_chunks = []
@@ -437,7 +429,7 @@ class AdaptiveTextSplitter:
                 # Fallback to simple splitting
                 chunks = self._simple_split(doc, chunk_size, chunk_overlap)
                 all_chunks.extend(chunks)
-
+        
         # Filter very short chunks
         all_chunks = [chunk for chunk in all_chunks if len(chunk.page_content.strip()) >= 50]
         
@@ -447,12 +439,12 @@ class AdaptiveTextSplitter:
     def _analyze_paragraph_structure(self, documents: List[Document]) -> float:
         """Analyze average paragraph length"""
         paragraphs = []
-        for doc in documents[:5]:  # Sample first 5 docs
+        for doc in documents[:5]: # Sample first 5 docs
             paras = [p.strip() for p in doc.page_content.split('\n\n') if p.strip()]
             paragraphs.extend(paras)
             
         if not paragraphs:
-            return 150  # Default
+            return 150 # Default
             
         avg_length = sum(len(p) for p in paragraphs) / len(paragraphs)
         return avg_length
@@ -466,7 +458,7 @@ class AdaptiveTextSplitter:
             sentences.extend([s.strip() for s in sents if s.strip()])
             
         if not sentences:
-            return 15  # Default
+            return 15 # Default
             
         avg_length = sum(len(s.split()) for s in sentences) / len(sentences)
         return avg_length
@@ -481,9 +473,9 @@ class AdaptiveTextSplitter:
             total_chars += len(content)
             
             # Count technical indicators
-            technical_indicators += len(re.findall(r'\d+', content))  # Numbers
-            technical_indicators += len(re.findall(r'[A-Z]{2,}', content))  # Acronyms
-            technical_indicators += len(re.findall(r'[()[\]{}]', content))  # Brackets
+            technical_indicators += len(re.findall(r'\d+', content)) # Numbers
+            technical_indicators += len(re.findall(r'[A-Z]{2,}', content)) # Acronyms
+            technical_indicators += len(re.findall(r'[()[\]{}]', content)) # Brackets
             
         if total_chars == 0:
             return 0.1
@@ -550,7 +542,7 @@ class AdaptiveTextSplitter:
         
         if current_section["content"].strip():
             sections.append(current_section)
-            
+        
         # Only return sections if we found meaningful divisions
         if len(sections) > 1 and all(len(s["content"]) > 100 for s in sections):
             return sections
@@ -559,7 +551,7 @@ class AdaptiveTextSplitter:
 
     def _is_potential_header(self, line: str) -> bool:
         """Universal header detection without domain bias"""
-        if not line or len(line) > 150:  # Too long to be a header
+        if not line or len(line) > 150: # Too long to be a header
             return False
             
         # Check against universal patterns
@@ -571,13 +563,13 @@ class AdaptiveTextSplitter:
         if (len(line) < 80 and 
             (line.isupper() or 
              line.endswith(':') or 
-             re.match(r'^\d+[\.\)]\s', line) or
+             re.match(r'^\d+[\.\)]\s', line) or 
              (line[0].isupper() and line.count(' ') <= 5))):
             return True
             
         return False
 
-    def _split_by_sections(self, sections: List[Dict], base_metadata: Dict, 
+    def _split_by_sections(self, sections: List[Dict], base_metadata: Dict,
                           chunk_size: int, chunk_overlap: int) -> List[Document]:
         """Split content by detected sections"""
         chunks = []
@@ -602,7 +594,7 @@ class AdaptiveTextSplitter:
                     content, header, base_metadata, chunk_size, chunk_overlap
                 )
                 chunks.extend(section_chunks)
-                
+        
         return chunks
 
     def _split_large_section(self, content: str, header: str, base_metadata: Dict,
@@ -633,7 +625,7 @@ class AdaptiveTextSplitter:
                 full_content = chunk_text
                 
             chunks.append(Document(page_content=full_content, metadata=enhanced_metadata))
-            
+        
         return chunks
 
     def _enhanced_recursive_split(self, document: Document, chunk_size: int, chunk_overlap: int) -> List[Document]:
@@ -652,7 +644,7 @@ class AdaptiveTextSplitter:
                 "total_chunks": len(chunks),
                 "chunk_type": "recursive_split"
             })
-            
+        
         return chunks
 
     def _simple_split(self, document: Document, chunk_size: int, chunk_overlap: int) -> List[Document]:
@@ -684,7 +676,7 @@ class RedisCache:
             logger.warning("⚠️ Redis not available, using fallback cache")
             components_ready["redis"] = False
             return
-
+            
         try:
             self.redis = redis.Redis(
                 host=os.getenv("REDIS_HOST", "localhost"),
@@ -700,6 +692,7 @@ class RedisCache:
             await asyncio.wait_for(self.redis.ping(), timeout=5)
             components_ready["redis"] = True
             logger.info("✅ Redis cache initialized successfully")
+            
         except Exception as e:
             logger.warning(f"⚠️ Redis not available, using fallback cache: {e}")
             self.redis = None
@@ -748,7 +741,7 @@ class OptimizedEmbeddingService:
         """Process embeddings in batches"""
         if not texts:
             return []
-
+            
         async with self.processing_lock:
             results = []
             uncached_texts = []
@@ -761,7 +754,7 @@ class OptimizedEmbeddingService:
                 else:
                     uncached_texts.append(text)
                     uncached_indices.append(i)
-
+            
             if uncached_texts:
                 try:
                     await ensure_models_ready()
@@ -785,11 +778,12 @@ class OptimizedEmbeddingService:
                         logger.warning("⚠️ No embedding model available, using zero vectors")
                         for i in uncached_indices:
                             results.append((i, np.zeros(384)))
+                            
                 except Exception as e:
                     logger.error(f"❌ Embedding error: {e}")
                     for i in uncached_indices:
                         results.append((i, np.zeros(384)))
-
+            
             results.sort(key=lambda x: x[0])
             return [embedding for _, embedding in results]
 
@@ -797,11 +791,11 @@ class OptimizedEmbeddingService:
         """Get single query embedding"""
         if not query.strip():
             return np.zeros(384)
-
+            
         query_hash = hashlib.md5(query.encode()).hexdigest()
         if query_hash in self.embedding_cache:
             return self.embedding_cache[query_hash]
-
+            
         try:
             await ensure_models_ready()
             if base_sentence_model:
@@ -836,7 +830,7 @@ class OptimizedOpenAIClient:
         """Initialize OpenAI client"""
         if not api_key:
             raise ValueError("OpenAI API key is required")
-
+            
         try:
             self.client = AsyncOpenAI(
                 api_key=api_key,
@@ -852,6 +846,7 @@ class OptimizedOpenAIClient:
             await self._test_connection()
             components_ready["openai_client"] = True
             logger.info("✅ OpenAI client initialized successfully")
+            
         except Exception as e:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             components_ready["openai_client"] = False
@@ -884,7 +879,7 @@ class OptimizedOpenAIClient:
         """Optimized completion with caching"""
         if not self.client:
             raise ValueError("OpenAI client not initialized")
-
+            
         prompt_hash = self._get_prompt_hash(messages, **kwargs)
         
         # Check local cache first
@@ -898,7 +893,7 @@ class OptimizedOpenAIClient:
             result = redis_cached['content']
             self.prompt_cache[prompt_hash] = result
             return result
-
+            
         async with self.request_semaphore:
             async def make_request():
                 return await self.client.chat.completions.create(
@@ -908,7 +903,7 @@ class OptimizedOpenAIClient:
                     max_tokens=kwargs.get("max_tokens", 1000),
                     timeout=60
                 )
-
+            
             response = await retry_with_backoff(make_request)
             result = response.choices[0].message.content
             
@@ -931,7 +926,7 @@ class UniversalDomainDetector:
         
         # REMOVED SPECIFIC DOMAIN DESCRIPTIONS - keeping generic
         self.domain_descriptions = {
-            domain: " ".join(keywords) 
+            domain: " ".join(keywords)
             for domain, keywords in DOMAIN_KEYWORDS.items()
         }
 
@@ -965,22 +960,21 @@ class UniversalDomainDetector:
         """Universal domain detection - TRULY GENERALIZED"""
         if not documents:
             return "general", 0.5
-
+            
         combined_text = ' '.join([doc.page_content[:500] for doc in documents[:10]])
         cache_key = hashlib.md5(combined_text.encode()).hexdigest()[:16]
         
         if cache_key in self.fallback_cache:
             return self.fallback_cache[cache_key]
-
+            
         try:
             # Multi-strategy detection
             keyword_scores = self._keyword_based_detection(documents)
             hotword_scores = self._hotwords_detection(documents)
             semantic_scores = {}
-            
             if self.domain_embeddings and base_sentence_model:
                 semantic_scores = self._semantic_detection(documents)
-
+            
             # Combine all scores with balanced weighting
             final_scores = {}
             for domain in DOMAIN_KEYWORDS.keys():
@@ -998,13 +992,13 @@ class UniversalDomainDetector:
                 if domain in semantic_scores:
                     score += 0.2 * semantic_scores[domain]
                     weights_sum += 0.2
-                
+                    
                 # Normalize by actual weights used
                 if weights_sum > 0:
                     final_scores[domain] = score / weights_sum
                 else:
                     final_scores[domain] = 0.0
-
+            
             if final_scores:
                 best_domain = max(final_scores, key=final_scores.get)
                 best_score = final_scores[best_domain]
@@ -1014,7 +1008,7 @@ class UniversalDomainDetector:
                 if best_score < confidence_threshold:
                     best_domain = "general"
                     best_score = confidence_threshold
-
+                    
                 result = (best_domain, best_score)
                 self.fallback_cache[cache_key] = result
                 
@@ -1042,12 +1036,12 @@ class UniversalDomainDetector:
                 for domain in DOMAIN_HOTWORDS_INDEX[word]:
                     domain_hits[domain] += 1
                     total_hits += 1
-
+        
         domain_scores = {}
         if total_hits > 0:
             for domain, hits in domain_hits.items():
                 domain_scores[domain] = hits / total_hits
-
+                
         return domain_scores
 
     def _keyword_based_detection(self, documents: List[Document]) -> Dict[str, float]:
@@ -1063,7 +1057,7 @@ class UniversalDomainDetector:
             # Normalize by keyword count and text length
             normalized_score = matches / (len(keywords) * len(combined_text) / 1000)
             domain_scores[domain] = min(1.0, normalized_score)
-
+            
         return domain_scores
 
     def _semantic_detection(self, documents: List[Document]) -> Dict[str, float]:
@@ -1076,7 +1070,7 @@ class UniversalDomainDetector:
             for domain, domain_embedding in self.domain_embeddings.items():
                 similarity = float(util.cos_sim(content_embedding, domain_embedding)[0][0])
                 domain_scores[domain] = similarity
-
+                
             return domain_scores
         except Exception as e:
             logger.warning(f"⚠️ Semantic detection error: {e}")
@@ -1135,14 +1129,14 @@ class TokenOptimizedProcessor:
             total_chunks = doc.metadata.get('total_chunks', 1)
             if total_chunks > 1:
                 position_boost = 1.15 - (chunk_index / total_chunks) * 0.3
-
+            
             # Section completeness boost
             section_boost = 1.0
             if doc.metadata.get('chunk_type') == 'complete_section':
                 section_boost = 1.05
             elif doc.metadata.get('section_header'):
                 section_boost = 1.02
-
+            
             # Semantic similarity
             semantic_score = 0.5
             if base_sentence_model:
@@ -1152,12 +1146,12 @@ class TokenOptimizedProcessor:
                     semantic_score = float(util.cos_sim(doc_embedding, query_embedding)[0][0])
                 except Exception:
                     pass
-
+            
             # Length penalty for very short chunks
             length_penalty = 1.0
             if len(doc.page_content) < 100:
                 length_penalty = 0.8
-
+            
             # Balanced final score
             final_score = (
                 0.35 * semantic_score +
@@ -1165,7 +1159,7 @@ class TokenOptimizedProcessor:
                 0.20 * position_boost +
                 0.10 * section_boost
             ) * length_penalty
-
+            
             return min(1.0, final_score)
             
         except Exception as e:
@@ -1199,20 +1193,20 @@ class TokenOptimizedProcessor:
             
         if max_tokens is None:
             max_tokens = self.max_context_tokens
-
+            
         doc_scores = []
         for doc in documents:
             relevance = self.calculate_relevance_score(doc, query)
             tokens = self.estimate_tokens(doc.page_content)
             efficiency = relevance / max(tokens, 1)
             doc_scores.append((doc, relevance, tokens, efficiency))
-
+        
         # Sort by efficiency
         doc_scores.sort(key=lambda x: x[3], reverse=True)
-
+        
         context_parts = []
         token_budget = max_tokens - self.token_buffer
-
+        
         for doc, relevance, tokens, efficiency in doc_scores:
             if tokens <= token_budget:
                 context_parts.append(doc.page_content)
@@ -1222,7 +1216,7 @@ class TokenOptimizedProcessor:
                 partial_content = self._truncate_content(doc.page_content, token_budget)
                 context_parts.append(partial_content)
                 break
-
+        
         context = "\n\n".join(context_parts)
         
         if LOG_VERBOSE:
@@ -1262,6 +1256,7 @@ class EnhancedRAGSystem:
         self.token_processor = TokenOptimizedProcessor()
         self._processing_lock = asyncio.Lock()
         self.text_splitter = None
+        self.document_url = None
 
     async def __aenter__(self):
         return self
@@ -1276,6 +1271,7 @@ class EnhancedRAGSystem:
             self.bm25_retriever = None
             self.documents.clear()
             self.processed_files.clear()
+            
             if LOG_VERBOSE:
                 logger.info(f"🧹 Session {self.session_id} cleaned up")
         except Exception as e:
@@ -1309,12 +1305,13 @@ class EnhancedRAGSystem:
         """Process documents with universal optimization"""
         async with self._processing_lock:
             start_time = time.time()
+            
             try:
                 if not file_paths:
                     raise HTTPException(status_code=400, detail="No file paths provided")
-
+                    
                 logger.info(f"📄 Processing {len(file_paths)} documents")
-
+                
                 raw_documents = []
                 for file_path in file_paths:
                     try:
@@ -1323,23 +1320,23 @@ class EnhancedRAGSystem:
                     except Exception as e:
                         logger.warning(f"⚠️ Error loading {file_path}: {e}")
                         continue
-
+                
                 if not raw_documents:
                     raise HTTPException(status_code=400, detail="No documents could be loaded")
-
+                
                 # Universal domain detection
                 domain, domain_confidence = DOMAIN_DETECTOR.detect_domain(raw_documents)
                 self.domain = domain
                 self.domain_config = self._adapt_config_for_domain(domain)
-
+                
                 logger.info(f"🔍 Detected domain: {domain} (confidence: {domain_confidence:.2f})")
-
+                
                 # Initialize adaptive text splitter
                 self.text_splitter = AdaptiveTextSplitter(
                     base_chunk_size=self.domain_config["chunk_size"],
                     base_chunk_overlap=self.domain_config["chunk_overlap"]
                 )
-
+                
                 # Enhanced metadata
                 for doc in raw_documents:
                     doc.metadata.update({
@@ -1349,22 +1346,23 @@ class EnhancedRAGSystem:
                         'processing_timestamp': datetime.now().isoformat(),
                         'file_type': self._get_file_type(doc.metadata.get('source', ''))
                     })
-
+                
                 # Adaptive document chunking
                 logger.info("🔄 Starting adaptive document chunking...")
                 documents_list = self.text_splitter.split_documents(raw_documents, domain)
-
+                
                 # Filter and convert to deque
                 documents_list = [doc for doc in documents_list if len(doc.page_content.strip()) >= 50]
                 self.documents = deque(documents_list)
+                
                 self.document_hash = self.calculate_document_hash(list(self.documents))
                 self.processed_files = [os.path.basename(fp) for fp in file_paths]
-
+                
                 # Setup retrievers
                 await self._setup_retrievers()
-
+                
                 processing_time = time.time() - start_time
-
+                
                 result = {
                     'session_id': self.session_id,
                     'document_hash': self.document_hash,
@@ -1385,12 +1383,12 @@ class EnhancedRAGSystem:
                         'context_optimization': True
                     }
                 }
-
+                
                 if LOG_VERBOSE:
                     logger.info(f"✅ Processing complete in {processing_time:.2f}s: {result}")
-
+                    
                 return result
-
+                
             except Exception as e:
                 logger.error(f"❌ Document processing error: {e}")
                 raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
@@ -1408,9 +1406,9 @@ class EnhancedRAGSystem:
             except Exception as e:
                 logger.warning(f"⚠️ MIME detection failed: {e}")
                 mime_type = None
-
+                
             file_extension = os.path.splitext(file_path)[1].lower()
-
+            
             # Route based on MIME type or extension
             if mime_type == 'application/pdf' or file_extension == '.pdf':
                 loader = PyMuPDFLoader(file_path)
@@ -1421,15 +1419,15 @@ class EnhancedRAGSystem:
             else:
                 logger.info(f"📄 Unknown type {mime_type or file_extension}, trying as text...")
                 loader = TextLoader(file_path, encoding='utf-8')
-
+            
             docs = await asyncio.to_thread(loader.load)
-
+            
             if not docs:
                 raise ValueError(f"No content loaded from {file_path}")
-
+                
             logger.info(f"✅ Loaded {len(docs)} documents from {file_path}")
             return docs
-
+            
         except Exception as e:
             logger.error(f"❌ Failed to load {file_path}: {e}")
             raise
@@ -1451,13 +1449,13 @@ class EnhancedRAGSystem:
         """Setup retrievers"""
         try:
             logger.info("🔧 Setting up retrievers...")
-
+            
             # Setup vector store if available
             if HAS_PINECONE and pinecone and embedding_model and PINECONE_API_KEY:
                 try:
                     await ensure_models_ready()
                     namespace = f"{self.domain}_{self.document_hash}"
-
+                    
                     # Initialize Pinecone if not done
                     try:
                         pinecone.init(api_key=PINECONE_API_KEY, environment=PINECONE_ENVIRONMENT)
@@ -1467,14 +1465,15 @@ class EnhancedRAGSystem:
                                 dimension=384,
                                 metric="cosine"
                             )
-
+                        
                         global pinecone_index
                         pinecone_index = pinecone.Index(PINECONE_INDEX_NAME)
                         components_ready["pinecone"] = True
+                        
                     except Exception as e:
                         logger.warning(f"⚠️ Pinecone initialization failed: {e}")
                         components_ready["pinecone"] = False
-
+                    
                     if pinecone_index:
                         self.vector_store = Pinecone(
                             index=pinecone_index,
@@ -1482,19 +1481,19 @@ class EnhancedRAGSystem:
                             text_key="text",
                             namespace=namespace
                         )
-
+                        
                         stats = pinecone_index.describe_index_stats()
                         current_count = stats.get('namespaces', {}).get(namespace, {}).get('vector_count', 0)
-
+                        
                         if current_count < len(self.documents):
                             logger.info(f"📊 Adding {len(self.documents)} documents to vector store")
                             await self._batch_upsert_to_pinecone(list(self.documents), namespace)
-
+                            
                         logger.info("✅ Vector store setup complete")
-
+                        
                 except Exception as e:
                     logger.warning(f"⚠️ Vector store setup failed: {e}")
-
+            
             # Setup BM25 retriever
             try:
                 if self.documents:
@@ -1504,9 +1503,10 @@ class EnhancedRAGSystem:
                     )
                     self.bm25_retriever.k = min(self.domain_config["rerank_top_k"], len(self.documents))
                     logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
+                    
             except Exception as e:
                 logger.warning(f"⚠️ BM25 retriever setup failed: {e}")
-
+                
         except Exception as e:
             logger.error(f"❌ Retriever setup error: {e}")
 
@@ -1516,13 +1516,15 @@ class EnhancedRAGSystem:
             batch_size = 50
             for i in range(0, len(documents), batch_size):
                 batch = documents[i:i + batch_size]
-
+                
                 # Prepare vectors
                 vectors = []
                 for j, doc in enumerate(batch):
                     doc_id = f"{namespace}_{i+j}"
+                    
                     # Get embedding
                     embedding = await EMBEDDING_SERVICE.get_query_embedding(doc.page_content)
+                    
                     vectors.append((
                         doc_id,
                         embedding.tolist(),
@@ -1533,13 +1535,13 @@ class EnhancedRAGSystem:
                             "section_header": doc.metadata.get("section_header", "")
                         }
                     ))
-
+                
                 # Upsert to Pinecone
                 await asyncio.to_thread(pinecone_index.upsert, vectors=vectors, namespace=namespace)
-
+                
                 if LOG_VERBOSE:
                     logger.info(f"📊 Upserted batch {i//batch_size + 1}/{(len(documents)-1)//batch_size + 1}")
-
+                    
         except Exception as e:
             logger.error(f"❌ Batch upsert error: {e}")
 
@@ -1547,17 +1549,17 @@ class EnhancedRAGSystem:
         """Enhanced retrieval with parallel processing"""
         if top_k is None:
             top_k = self.domain_config["context_docs"]
-
+            
         try:
             if not self.documents:
                 return [], []
-
+                
             semantic_k = min(self.domain_config["semantic_search_k"], len(self.documents))
             rerank_k = min(self.domain_config["rerank_top_k"], len(self.documents))
-
+            
             if LOG_VERBOSE:
                 logger.info(f"🔍 Retrieving: semantic_k={semantic_k}, rerank_k={rerank_k}, final_k={top_k}")
-
+            
             # Parallel retrieval
             tasks = []
             if self.vector_store:
@@ -1565,17 +1567,17 @@ class EnhancedRAGSystem:
                     tasks.append(self._mmr_search(query, semantic_k))
                 else:
                     tasks.append(self._vector_search(query, semantic_k))
-
+                    
             if self.bm25_retriever:
                 tasks.append(self._bm25_search(query))
-
+            
             if tasks:
                 search_results = await asyncio.gather(*tasks, return_exceptions=True)
             else:
                 search_results = [await self._fallback_search(query, semantic_k)]
-
+            
             return await self._merge_and_rerank(query, search_results, top_k, rerank_k)
-
+            
         except Exception as e:
             logger.error(f"❌ Retrieval error: {e}")
             return list(self.documents)[:top_k], [0.5] * min(len(self.documents), top_k)
@@ -1635,9 +1637,9 @@ class EnhancedRAGSystem:
                 # Boost for section headers
                 if doc.metadata.get('section_header', '').lower() in query_lower:
                     score += 0.2
-                    
+                
                 doc_scores.append((doc, score))
-
+            
             doc_scores.sort(key=lambda x: x[1], reverse=True)
             return doc_scores[:k]
             
@@ -1650,7 +1652,7 @@ class EnhancedRAGSystem:
         all_docs = []
         all_scores = []
         seen_content = set()
-
+        
         # Process vector search results
         if search_results and not isinstance(search_results[0], Exception):
             vector_results = search_results[0]
@@ -1665,7 +1667,7 @@ class EnhancedRAGSystem:
                             normalized_score = max(0.0, min(1.0, (2.0 - score) / 2.0)) if score > 1.0 else score
                             all_scores.append(normalized_score)
                             seen_content.add(content_hash)
-
+        
         # Process BM25 results
         if len(search_results) > 1 and not isinstance(search_results[1], Exception):
             bm25_results = search_results[1]
@@ -1677,18 +1679,18 @@ class EnhancedRAGSystem:
                             all_docs.append(doc)
                             all_scores.append(0.6)
                             seen_content.add(content_hash)
-
+        
         if not all_docs:
             all_docs = list(self.documents)[:rerank_k]
             all_scores = [0.4] * len(all_docs)
-
+        
         # Rerank if available
         if reranker and len(all_docs) > 1:
             try:
                 return await self._semantic_rerank(query, all_docs, all_scores, top_k)
             except Exception as e:
                 logger.warning(f"⚠️ Reranking failed: {e}")
-
+        
         # Fallback: sort by score
         scored_docs = list(zip(all_docs, all_scores))
         scored_docs.sort(key=lambda x: x[1], reverse=True)
@@ -1703,41 +1705,41 @@ class EnhancedRAGSystem:
         try:
             if len(documents) <= 2:
                 return documents[:top_k], scores[:top_k]
-
+                
             await ensure_models_ready()
             if not reranker:
                 return documents[:top_k], scores[:top_k]
-
+            
             pairs = [[query, doc.page_content[:512]] for doc in documents[:25]]
             rerank_scores = await asyncio.to_thread(reranker.predict, pairs)
-
+            
             # Normalize rerank scores
             normalized_rerank = [(score + 1) / 2 for score in rerank_scores]
-
+            
             combined_scores = []
             for i, (orig_score, rerank_score) in enumerate(zip(scores[:len(normalized_rerank)], normalized_rerank)):
                 doc = documents[i]
                 boost = 1.0
-
+                
                 # Universal boost for complete sections
                 if doc.metadata.get('chunk_type') == 'complete_section':
                     boost = 1.05
-
+                
                 combined = (0.7 * rerank_score + 0.3 * orig_score) * boost
                 combined_scores.append(min(1.0, combined))
-
+            
             # Handle remaining documents
             if len(documents) > len(combined_scores):
                 combined_scores.extend(scores[len(combined_scores):])
-
+            
             scored_docs = list(zip(documents, combined_scores))
             scored_docs.sort(key=lambda x: x[1], reverse=True)
-
+            
             final_docs = [doc for doc, _ in scored_docs[:top_k]]
             final_scores = [score for _, score in scored_docs[:top_k]]
-
+            
             return final_docs, final_scores
-
+            
         except Exception as e:
             logger.error(f"❌ Semantic reranking error: {e}")
             return documents[:top_k], scores[:top_k]
@@ -1759,13 +1761,13 @@ class UniversalDecisionEngine:
         """Universal confidence calculation"""
         if not similarity_scores:
             return 0.0
-
+            
         scores_str = str(sorted(similarity_scores))
         cache_key = hashlib.md5(f"{query}_{scores_str}_{domain_confidence}".encode()).hexdigest()[:12]
         
         if cache_key in self.confidence_cache:
             return self.confidence_cache[cache_key]
-
+            
         try:
             scores_array = np.array(similarity_scores)
             max_score = np.max(scores_array)
@@ -1816,7 +1818,7 @@ class UniversalDecisionEngine:
         query_terms = set(query.lower().split())
         if not query_terms:
             return 0.5
-
+            
         match_scores = []
         for doc in docs[:5]:
             doc_terms = set(doc.page_content.lower().split())
@@ -1826,14 +1828,14 @@ class UniversalDecisionEngine:
             # Boost for phrase matches
             if query.lower() in doc.page_content.lower():
                 match_score += 0.2
-                
+            
             # Small boost for header matches
             header = doc.metadata.get('section_header', '')
             if header and any(term in header.lower() for term in query_terms):
                 match_score += 0.1
                 
             match_scores.append(match_score)
-
+        
         return np.mean(match_scores) if match_scores else 0.5
 
     def _classify_query_type(self, query: str) -> str:
@@ -1863,13 +1865,13 @@ class UniversalDecisionEngine:
         try:
             if not retrieved_docs:
                 return self._empty_response(query, domain)
-
+            
             # Classify query type
             classified_query_type = self._classify_query_type(query)
             
             # Calculate confidence
             confidence = self.calculate_confidence_score(query, similarity_scores, retrieved_docs, domain_confidence)
-
+            
             # Get adaptive confidence threshold
             base_threshold = rag_system.domain_config["confidence_threshold"] if rag_system else 0.15
             
@@ -1880,29 +1882,30 @@ class UniversalDecisionEngine:
                 threshold = base_threshold * 1.1
             else:
                 threshold = base_threshold
-
+            
             # Fallback if confidence is low
             if confidence < threshold and rag_system:
                 logger.info(f"🔄 Low confidence ({confidence:.2f}), attempting fallback")
                 fallback_result = await self._attempt_fallback(
                     query, domain, rag_system, threshold
                 )
+                
                 if fallback_result:
                     retrieved_docs, similarity_scores, confidence = fallback_result
                     logger.info(f"✅ Fallback improved confidence to {confidence:.2f}")
-
+            
             # Optimize context
             context = self.token_processor.optimize_context_intelligently(
                 retrieved_docs, query, max_tokens=4000
             )
-
+            
             # Generate response
             response = await self._generate_universal_response(
                 query, context, domain, confidence, classified_query_type
             )
-
+            
             processing_time = time.time() - start_time
-
+            
             result = {
                 "query": query,
                 "answer": response,
@@ -1930,9 +1933,9 @@ class UniversalDecisionEngine:
                     "fallback_attempted": confidence < threshold
                 }
             }
-
+            
             return result
-
+            
         except Exception as e:
             logger.error(f"❌ Query processing error: {e}")
             return self._error_response(query, domain, str(e))
@@ -1953,7 +1956,7 @@ class UniversalDecisionEngine:
                 new_confidence = self.calculate_confidence_score(query, expanded_scores, expanded_docs)
                 if new_confidence > threshold * fallback_multiplier:
                     return expanded_docs, expanded_scores, new_confidence
-
+            
             # Strategy 2: Query expansion
             expanded_query = self._expand_query(query)
             if expanded_query != query:
@@ -1965,7 +1968,7 @@ class UniversalDecisionEngine:
                     new_confidence = self.calculate_confidence_score(expanded_query, fallback_scores, fallback_docs)
                     if new_confidence > threshold * (fallback_multiplier * 0.9):
                         return fallback_docs, fallback_scores, new_confidence
-
+            
             # Strategy 3: Broader keyword search
             query_keywords = [word for word in query.split() if len(word) > 3]
             if len(query_keywords) > 1:
@@ -1978,9 +1981,9 @@ class UniversalDecisionEngine:
                     new_confidence = self.calculate_confidence_score(broader_query, fallback_scores, fallback_docs)
                     if new_confidence > threshold * (fallback_multiplier * 0.8):
                         return fallback_docs, fallback_scores, new_confidence
-
+            
             return None
-
+            
         except Exception as e:
             logger.warning(f"⚠️ Fallback error: {e}")
             return None
@@ -1989,7 +1992,7 @@ class UniversalDecisionEngine:
         """Universal query expansion"""
         query_lower = query.lower()
         expansions = []
-
+        
         # Universal question type expansions
         if "what" in query_lower and "is" in query_lower:
             expansions.extend(["definition", "meaning", "explanation"])
@@ -2003,9 +2006,10 @@ class UniversalDecisionEngine:
             expansions.extend(["reason", "cause", "purpose"])
         elif "where" in query_lower:
             expansions.extend(["location", "place", "position"])
-
+        
         if expansions:
             return f"{query} {' '.join(expansions[:2])}"
+        
         return query
 
     async def _generate_universal_response(self, query: str, context: str, domain: str,
@@ -2015,7 +2019,7 @@ class UniversalDecisionEngine:
             await ensure_openai_ready()
             if not openai_client:
                 return "System is still initializing. Please wait a moment and try again."
-
+            
             # Universal system prompt
             system_prompt = f"""You are an expert document analyst specializing in {domain} content. Provide accurate, helpful responses based on the provided context.
 
@@ -2097,27 +2101,34 @@ DOMAIN_DETECTOR = UniversalDomainDetector()
 DECISION_ENGINE = UniversalDecisionEngine()
 
 # ================================
-# ASYNC STARTUP AND SHUTDOWN
+# ASYNC STARTUP AND SHUTDOWN - UPDATED
 # ================================
 
 async def initialize_system():
-    """Initialize only lightweight components - NO HEAVY MODELS"""
-    logger.info("🚀 Starting lightweight system initialization...")
+    """Initialize system with model pre-loading"""
+    logger.info("🚀 Starting system initialization...")
     try:
-        # Only initialize Redis and OpenAI - NO model loading
+        # Initialize Redis and OpenAI first
         await REDIS_CACHE.initialize()
         if OPENAI_API_KEY:
             await ensure_openai_ready()
         
-        logger.info("✅ Lightweight system initialization complete")
+        # Pre-load essential models (they should be cached from Docker build)
+        logger.info("🔄 Pre-loading essential models...")
+        await ensure_models_ready()
+        
+        # Initialize domain detector embeddings
+        if base_sentence_model:
+            DOMAIN_DETECTOR.initialize_embeddings()
+        
+        logger.info("✅ System initialization complete")
     except Exception as e:
         logger.error(f"❌ System initialization failed: {e}")
-        raise
+        # Don't raise - let the service start in degraded mode
 
 async def shutdown_system():
     """Cleanup system resources"""
     logger.info("🔄 Shutting down system...")
-    
     try:
         # Clear caches
         EMBEDDING_CACHE.clear()
@@ -2147,7 +2158,6 @@ async def shutdown_system():
                 logger.warning(f"⚠️ Error closing OpenAI client: {e}")
         
         logger.info("✅ System shutdown complete")
-        
     except Exception as e:
         logger.error(f"❌ Shutdown error: {e}")
 
@@ -2189,6 +2199,7 @@ class ProcessDocumentsRequest(BaseModel):
     documents: HttpUrl = Field(description="Google Drive download URL for documents")
 
 class QueryRequest(BaseModel):
+    documents: HttpUrl = Field(description="Document URL (will be processed if not already in session)")
     questions: List[str] = Field(description="List of questions to process")
 
 class ProcessDocumentsResponse(BaseModel):
@@ -2222,18 +2233,31 @@ class HealthCheckResponse(BaseModel):
     system_metrics: Optional[Dict[str, Any]] = None
 
 # ================================
-# API ENDPOINTS
+# API ENDPOINTS - UPDATED HEALTH CHECK
 # ================================
 
 @app.get("/health", response_model=HealthCheckResponse)
 async def health_check():
-    """Health check that doesn't wait for heavy models"""
-    return HealthCheckResponse(
-        status="healthy",
-        version="2.0.0",
-        components={"basic_system": True},  # Don't check heavy components
-        system_metrics=None
-    )
+    """Comprehensive health check"""
+    try:
+        # Check all components
+        return HealthCheckResponse(
+            status="healthy",
+            version="2.0.0",
+            components=components_ready.copy(),
+            system_metrics={
+                "active_sessions": len(ACTIVE_SESSIONS),
+                "embedding_cache_size": len(EMBEDDING_CACHE),
+                "response_cache_size": len(RESPONSE_CACHE)
+            }
+        )
+    except Exception as e:
+        return HealthCheckResponse(
+            status="unhealthy",
+            version="2.0.0",
+            components={"error": str(e)},
+            system_metrics=None
+        )
 
 @app.post("/process-documents", response_model=ProcessDocumentsResponse)
 async def process_documents_endpoint(
@@ -2242,7 +2266,6 @@ async def process_documents_endpoint(
 ):
     """Process documents from Google Drive URL"""
     session_id = None
-    
     try:
         logger.info(f"📥 Processing documents from: {request.documents}")
         
@@ -2262,7 +2285,7 @@ async def process_documents_endpoint(
             os.unlink(file_path)
         except Exception as e:
             logger.warning(f"⚠️ Could not delete temp file {file_path}: {e}")
-        
+            
         return ProcessDocumentsResponse(**result)
         
     except HTTPException:
@@ -2279,167 +2302,113 @@ async def process_documents_endpoint(
                 logger.warning(f"⚠️ Error during cleanup: {cleanup_error}")
         
         raise HTTPException(
-            status_code=500, 
+            status_code=500,
             detail=f"Document processing failed: {str(e)}"
         )
 
-@app.post("/query", response_model=QueryResponse)
-async def query_endpoint(
+@app.post("/hackrx/run")
+async def hackrx_run_endpoint(
     request: QueryRequest,
     token: str = Depends(verify_token)
 ):
-    """Process multiple queries with enhanced features"""
+    """Process documents and answer questions - HackRx format"""
     start_time = time.time()
-    
     try:
         if not request.questions:
             raise HTTPException(status_code=400, detail="No questions provided")
         
-        if len(request.questions) > 10:
-            raise HTTPException(status_code=400, detail="Maximum 10 questions allowed")
+        logger.info(f"❓ Processing {len(request.questions)} questions for HackRx")
         
-        logger.info(f"❓ Processing {len(request.questions)} questions")
-        
-        # Find the most recent session
-        if not ACTIVE_SESSIONS:
-            raise HTTPException(
-                status_code=400, 
-                detail="No active document sessions. Please process documents first."
-            )
-        
-        latest_session = max(ACTIVE_SESSIONS.values(), key=lambda s: s.session_id)
-        
-        results = []
-        successful_answers = 0
-        
-        # Process each question
-        for i, question in enumerate(request.questions, 1):
-            question_start = time.time()
+        # Check if we need to process documents first
+        session = None
+        if request.documents:
+            # Check if this document is already processed
+            document_processed = False
+            for existing_session in ACTIVE_SESSIONS.values():
+                if hasattr(existing_session, 'document_url') and existing_session.document_url == str(request.documents):
+                    session = existing_session
+                    document_processed = True
+                    break
             
-            try:
-                logger.info(f"❓ Processing question {i}/{len(request.questions)}: {question[:50]}...")
+            if not document_processed:
+                # Process new document
+                logger.info(f"📥 Processing new document: {request.documents}")
+                file_path = await download_from_google_drive(str(request.documents))
                 
-                # Enhanced retrieval and processing
-                retrieved_docs, similarity_scores = await asyncio.wait_for(
-                    latest_session.enhanced_retrieve_and_rerank(question),
-                    timeout=QUESTION_TIMEOUT
+                session = EnhancedRAGSystem()
+                session.document_url = str(request.documents)  # Track the URL
+                ACTIVE_SESSIONS[session.session_id] = session
+                
+                await session.process_documents([file_path])
+                
+                # Cleanup temporary file
+                try:
+                    os.unlink(file_path)
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not delete temp file {file_path}: {e}")
+        
+        # Use existing session if no documents specified
+        if not session:
+            if not ACTIVE_SESSIONS:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No documents provided and no active sessions available"
                 )
+            session = max(ACTIVE_SESSIONS.values(), key=lambda s: s.session_id)
+        
+        # Process questions and collect simple answers
+        answers = []
+        
+        for i, question in enumerate(request.questions, 1):
+            try:
+                logger.info(f"❓ Processing question {i}/{len(request.questions)}")
+                
+                # Retrieve and process
+                retrieved_docs, similarity_scores = await session.enhanced_retrieve_and_rerank(question)
+                
+                if not retrieved_docs:
+                    answers.append("No relevant information found for this question.")
+                    continue
                 
                 # Process with decision engine
                 result = await DECISION_ENGINE.process_query_with_fallback(
                     query=question,
                     retrieved_docs=retrieved_docs,
                     similarity_scores=similarity_scores,
-                    domain=latest_session.domain,
-                    domain_confidence=1.0,
-                    query_type="general",
-                    rag_system=latest_session
+                    domain=session.domain,
+                    domain_confidence=0.8,
+                    rag_system=session
                 )
                 
-                question_time = time.time() - question_start
+                # Extract just the answer text
+                answers.append(result["answer"])
                 
-                # Format response
-                question_answer = QuestionAnswer(
-                    question=question,
-                    answer=result["answer"],
-                    confidence=result["confidence"],
-                    source_info={
-                        "retrieved_chunks": result["retrieved_chunks"],
-                        "domain": result["domain"],
-                        "processing_time": question_time
-                    }
-                )
+                logger.info(f"✅ Question {i} processed (confidence: {result['confidence']:.2f})")
                 
-                results.append(question_answer)
-                successful_answers += 1
-                
-            except asyncio.TimeoutError:
-                logger.warning(f"⏰ Question {i} timed out after {QUESTION_TIMEOUT}s")
-                results.append(QuestionAnswer(
-                    question=question,
-                    answer="Query timed out. Please try a more specific question.",
-                    confidence=0.0,
-                    source_info={
-                        "retrieved_chunks": 0,
-                        "domain": latest_session.domain,
-                        "processing_time": QUESTION_TIMEOUT
-                    }
-                ))
             except Exception as e:
                 logger.error(f"❌ Error processing question {i}: {e}")
-                results.append(QuestionAnswer(
-                    question=question,
-                    answer=f"Error processing question: {str(e)}",
-                    confidence=0.0,
-                    source_info={
-                        "retrieved_chunks": 0,
-                        "domain": latest_session.domain,
-                        "processing_time": time.time() - question_start
-                    }
-                ))
+                answers.append(f"Error processing question: {str(e)}")
         
-        total_time = time.time() - start_time
-        
-        # Prepare response
-        response = QueryResponse(
-            questions_and_answers=results,
-            processing_summary={
-                "total_questions": len(request.questions),
-                "successful_answers": successful_answers,
-                "total_processing_time": total_time,
-                "document_info": {
-                    "filename": f"google_drive_{latest_session.document_hash}.pdf",
-                    "document_hash": latest_session.document_hash,
-                    "total_chunks": len(latest_session.documents),
-                    "detected_domain": latest_session.domain
-                }
-            },
-            system_info={
-                "version": "2.0.0",
-                "session_id": latest_session.session_id,
-                "timestamp": datetime.now().isoformat(),
-                "components_status": components_ready.copy()
-            }
-        )
-        
-        logger.info(f"✅ Query processing completed in {total_time:.2f}s")
-        return response
+        # Return simple format as expected by HackRx
+        return {
+            "answers": answers
+        }
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Query processing failed: {e}")
-        raise HTTPException(status_code=500, detail=f"Query processing failed: {str(e)}")
+        logger.error(f"❌ HackRx endpoint processing failed: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Processing failed: {str(e)}"
+        )
 
-@app.get("/sessions")
-async def list_sessions(token: str = Depends(verify_token)):
-    """List active sessions with details"""
-    try:
-        sessions_info = {}
-        for session_id, session in ACTIVE_SESSIONS.items():
-            sessions_info[session_id] = {
-                "domain": session.domain,
-                "document_hash": session.document_hash,
-                "total_chunks": len(session.documents),
-                "processed_files": session.processed_files,
-                "confidence_threshold": session.domain_config.get("confidence_threshold", 0.15)
-            }
-        
-        return {
-            "active_sessions": len(ACTIVE_SESSIONS),
-            "sessions": sessions_info,
-            "cache_stats": {
-                "embedding_cache_size": len(EMBEDDING_CACHE),
-                "response_cache_size": len(RESPONSE_CACHE)
-            }
-        }
-    except Exception as e:
-        logger.error(f"❌ Error listing sessions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/sessions/{session_id}")
-async def delete_session(session_id: str, token: str = Depends(verify_token)):
-    """Delete a specific session"""
+@app.delete("/session/{session_id}")
+async def cleanup_session(
+    session_id: str,
+    token: str = Depends(verify_token)
+):
+    """Cleanup a specific session"""
     try:
         if session_id not in ACTIVE_SESSIONS:
             raise HTTPException(status_code=404, detail="Session not found")
@@ -2447,287 +2416,172 @@ async def delete_session(session_id: str, token: str = Depends(verify_token)):
         session = ACTIVE_SESSIONS.pop(session_id)
         await session.cleanup()
         
-        return {"message": f"Session {session_id} deleted successfully"}
+        logger.info(f"🧹 Session {session_id} cleaned up successfully")
+        return {"message": f"Session {session_id} cleaned up successfully"}
+        
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error deleting session: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ Session cleanup error: {e}")
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
 
-@app.delete("/sessions")
-async def clear_all_sessions(token: str = Depends(verify_token)):
-    """Clear all active sessions"""
+@app.get("/sessions")
+async def list_sessions(token: str = Depends(verify_token)):
+    """List all active sessions"""
     try:
-        session_count = len(ACTIVE_SESSIONS)
+        sessions = []
+        for session_id, session in ACTIVE_SESSIONS.items():
+            sessions.append({
+                "session_id": session_id,
+                "domain": session.domain,
+                "document_chunks": len(session.documents),
+                "processed_files": session.processed_files,
+                "document_hash": session.document_hash
+            })
         
+        return {
+            "active_sessions": len(ACTIVE_SESSIONS),
+            "sessions": sessions
+        }
+        
+    except Exception as e:
+        logger.error(f"❌ Error listing sessions: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to list sessions: {str(e)}")
+
+@app.post("/cleanup-all-sessions")
+async def cleanup_all_sessions(token: str = Depends(verify_token)):
+    """Cleanup all active sessions"""
+    try:
+        cleaned_count = 0
         for session_id in list(ACTIVE_SESSIONS.keys()):
             try:
                 session = ACTIVE_SESSIONS.pop(session_id)
                 await session.cleanup()
+                cleaned_count += 1
             except Exception as e:
-                logger.warning(f"⚠️ Error cleaning up session {session_id}: {e}")
+                logger.warning(f"⚠️ Error cleaning session {session_id}: {e}")
         
-        # Clear caches
-        EMBEDDING_CACHE.clear()
-        RESPONSE_CACHE.clear()
-        
+        logger.info(f"🧹 Cleaned up {cleaned_count} sessions")
         return {
-            "message": f"Cleared {session_count} sessions and all caches",
-            "cleared_sessions": session_count
-        }
-    except Exception as e:
-        logger.error(f"❌ Error clearing sessions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/domains")
-async def list_supported_domains(token: str = Depends(verify_token)):
-    """List all supported domains and their configurations"""
-    try:
-        domain_info = {}
-        for domain, config in ADAPTIVE_DOMAIN_CONFIGS.items():
-            domain_info[domain] = {
-                "keywords": DOMAIN_KEYWORDS.get(domain, []),
-                "confidence_adjustment": config.get("confidence_adjustment", 1.0),
-                "chunk_size_adjustment": config.get("chunk_size_adjustment", 1.0),
-                "semantic_weight": config.get("semantic_weight", 0.6)
-            }
-        
-        return {
-            "supported_domains": list(DOMAIN_KEYWORDS.keys()),
-            "domain_configurations": domain_info,
-            "base_config": BASE_CONFIG
-        }
-    except Exception as e:
-        logger.error(f"❌ Error listing domains: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/hackrx/run")
-async def hackrx_run_endpoint(
-    documents: HttpUrl = Field(description="Google Drive download URL for documents"),
-    questions: List[str] = Field(description="List of questions to process"),
-    token: str = Depends(verify_token)
-):
-    """HackRx combined endpoint - process documents and answer questions in one call"""
-    start_time = time.time()
-    session_id = None
-    
-    try:
-        if not questions:
-            raise HTTPException(status_code=400, detail="No questions provided")
-        
-        if len(questions) > 10:
-            raise HTTPException(status_code=400, detail="Maximum 10 questions allowed")
-            
-        logger.info(f"🚀 HackRx run: processing documents and {len(questions)} questions")
-        
-        # Step 1: Process documents
-        file_path = await download_from_google_drive(str(documents))
-        
-        session = EnhancedRAGSystem()
-        session_id = session.session_id
-        ACTIVE_SESSIONS[session_id] = session
-        
-        doc_result = await session.process_documents([file_path])
-        
-        # Cleanup temporary file
-        try:
-            os.unlink(file_path)
-        except Exception as e:
-            logger.warning(f"⚠️ Could not delete temp file {file_path}: {e}")
-        
-        # Step 2: Process questions
-        results = []
-        successful_answers = 0
-        
-        for i, question in enumerate(questions, 1):
-            question_start = time.time()
-            
-            try:
-                logger.info(f"❓ Processing question {i}/{len(questions)}: {question[:50]}...")
-                
-                retrieved_docs, similarity_scores = await asyncio.wait_for(
-                    session.enhanced_retrieve_and_rerank(question),
-                    timeout=QUESTION_TIMEOUT
-                )
-                
-                result = await DECISION_ENGINE.process_query_with_fallback(
-                    query=question,
-                    retrieved_docs=retrieved_docs,
-                    similarity_scores=similarity_scores,
-                    domain=session.domain,
-                    domain_confidence=1.0,
-                    query_type="general",
-                    rag_system=session
-                )
-                
-                question_time = time.time() - question_start
-                
-                question_answer = {
-                    "question": question,
-                    "answer": result["answer"],
-                    "confidence": result["confidence"],
-                    "source_info": {
-                        "retrieved_chunks": result["retrieved_chunks"],
-                        "domain": result["domain"],
-                        "processing_time": question_time
-                    }
-                }
-                
-                results.append(question_answer)
-                successful_answers += 1
-                
-            except Exception as e:
-                logger.error(f"❌ Error processing question {i}: {e}")
-                results.append({
-                    "question": question,
-                    "answer": f"Error processing question: {str(e)}",
-                    "confidence": 0.0,
-                    "source_info": {
-                        "retrieved_chunks": 0,
-                        "domain": session.domain,
-                        "processing_time": time.time() - question_start
-                    }
-                })
-        
-        total_time = time.time() - start_time
-        
-        # Prepare combined response
-        response = {
-            "questions_and_answers": results,
-            "processing_summary": {
-                "total_questions": len(questions),
-                "successful_answers": successful_answers,
-                "total_processing_time": total_time,
-                "document_info": {
-                    "filename": f"google_drive_{session.document_hash}.pdf",
-                    "document_hash": session.document_hash,
-                    "total_chunks": len(session.documents),
-                    "detected_domain": session.domain
-                }
-            },
-            "system_info": {
-                "version": "2.0.0",
-                "session_id": session.session_id,
-                "timestamp": datetime.now().isoformat(),
-                "components_status": components_ready.copy()
-            }
+            "message": f"Cleaned up {cleaned_count} sessions",
+            "cleaned_sessions": cleaned_count
         }
         
-        logger.info(f"✅ HackRx run completed in {total_time:.2f}s")
-        return response
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"❌ HackRx run failed: {e}")
-        
-        # Cleanup on error
-        if session_id and session_id in ACTIVE_SESSIONS:
-            try:
-                await ACTIVE_SESSIONS[session_id].cleanup()
-                del ACTIVE_SESSIONS[session_id]
-            except Exception as cleanup_error:
-                logger.warning(f"⚠️ Error during cleanup: {cleanup_error}")
-        
-        raise HTTPException(status_code=500, detail=f"HackRx run failed: {str(e)}")
+        logger.error(f"❌ Mass cleanup error: {e}")
+        raise HTTPException(status_code=500, detail=f"Mass cleanup failed: {str(e)}")
 
 # ================================
 # UTILITY FUNCTIONS
 # ================================
 
 async def download_from_google_drive(url: str) -> str:
-    """Download file from Google Drive with enhanced error handling"""
+    """Download file from Google Drive URL"""
     try:
         # Extract file ID from various Google Drive URL formats
-        file_id = None
-        
-        if "drive.google.com" in url:
-            if "/file/d/" in url:
-                file_id = url.split("/file/d/")[1].split("/")[0]
-            elif "id=" in url:
-                file_id = url.split("id=")[1].split("&")[0]
-        elif "docs.google.com" in url and "export?" in url:
-            if "id=" in url:
-                file_id = url.split("id=")[1].split("&")[0]
-        
+        file_id = extract_drive_file_id(url)
         if not file_id:
-            raise ValueError("Could not extract file ID from Google Drive URL")
+            raise ValueError("Invalid Google Drive URL format")
         
-        # Construct direct download URL
+        # Create download URL
         download_url = f"https://drive.google.com/uc?export=download&id={file_id}"
         
-        logger.info(f"📥 Downloading from Google Drive: {file_id}")
+        # Create temporary file
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        temp_path = temp_file.name
+        temp_file.close()
         
-        # Download with timeout and proper error handling
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=300),
-            connector=aiohttp.TCPConnector(limit=10)
-        ) as session:
+        logger.info(f"📥 Downloading file from Google Drive: {file_id}")
+        
+        # Download with session handling
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as session:
             async with session.get(download_url) as response:
-                if response.status != 200:
+                if response.status == 200:
+                    content = await response.read()
+                    
+                    # Handle virus scan warning page
+                    if b'Google Drive - Virus scan warning' in content:
+                        # Try to get the actual download link from the warning page
+                        warning_content = content.decode('utf-8', errors='ignore')
+                        import re
+                        match = re.search(r'href="(/uc\?export=download[^"]+)"', warning_content)
+                        if match:
+                            actual_url = "https://drive.google.com" + match.group(1).replace('&amp;', '&')
+                            async with session.get(actual_url) as actual_response:
+                                if actual_response.status == 200:
+                                    content = await actual_response.read()
+                                else:
+                                    raise HTTPException(status_code=400, detail="Failed to download file after virus scan")
+                        else:
+                            raise HTTPException(status_code=400, detail="Cannot bypass virus scan warning")
+                    
+                    # Save content to temporary file
+                    with open(temp_path, 'wb') as f:
+                        f.write(content)
+                    
+                    # Verify file was downloaded
+                    if os.path.getsize(temp_path) == 0:
+                        os.unlink(temp_path)
+                        raise HTTPException(status_code=400, detail="Downloaded file is empty")
+                    
+                    logger.info(f"✅ File downloaded successfully: {os.path.getsize(temp_path)} bytes")
+                    return temp_path
+                    
+                else:
                     raise HTTPException(
-                        status_code=400,
+                        status_code=response.status,
                         detail=f"Failed to download file: HTTP {response.status}"
                     )
-                
-                # Get content type for file extension
-                content_type = response.headers.get('content-type', 'application/octet-stream')
-                
-                # Determine file extension
-                extension = '.bin'
-                if 'pdf' in content_type:
-                    extension = '.pdf'
-                elif 'word' in content_type or 'docx' in content_type:
-                    extension = '.docx'
-                elif 'text' in content_type:
-                    extension = '.txt'
-                
-                # Create temporary file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=extension) as temp_file:
-                    temp_path = temp_file.name
                     
-                    # Download in chunks to handle large files
-                    async for chunk in response.content.iter_chunked(8192):
-                        temp_file.write(chunk)
-                
-                logger.info(f"✅ Downloaded to: {temp_path}")
-                return temp_path
-                
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ Download failed: {e}")
-        raise HTTPException(status_code=400, detail=f"Download failed: {str(e)}")
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+        logger.error(f"❌ Download error: {e}")
+        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+
+def extract_drive_file_id(url: str) -> Optional[str]:
+    """Extract file ID from various Google Drive URL formats"""
+    patterns = [
+        r'/file/d/([a-zA-Z0-9-_]+)',
+        r'id=([a-zA-Z0-9-_]+)',
+        r'/d/([a-zA-Z0-9-_]+)',
+        r'drive\.google\.com/.*?([a-zA-Z0-9-_]{25,})'
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url)
+        if match:
+            return match.group(1)
+    
+    return None
 
 # ================================
-# MAIN ENTRY POINT
+# DEVELOPMENT UTILITIES
 # ================================
 
 if __name__ == "__main__":
     import uvicorn
     
-    # Cloud Run compatible configuration
-    port = int(os.getenv("PORT", 8080))  # ✅ Use Cloud Run's PORT
-    
+    # Development server configuration
     config = {
         "host": "0.0.0.0",
-        "port": port,
-        "workers": 1,
-        "loop": "asyncio",
-        "http": "httptools",
+        "port": int(os.getenv("PORT", 8000)),
+        "reload": os.getenv("ENVIRONMENT", "production") == "development",
+        "workers": 1,  # Single worker to avoid session conflicts
         "log_level": "info",
         "access_log": True,
-        "reload": False,
-        "timeout_keep_alive": 300,  # ✅ Increased for heavy processing
-        "timeout_graceful_shutdown": 120,  # ✅ Increased for cleanup
+        "loop": "asyncio"
     }
     
-    logger.info(f"🚀 Starting Universal RAG System v2.0 on port {port}...")
-    logger.info(f"📊 Configuration: {config}")
+    logger.info(f"🚀 Starting Universal RAG System v2.0 on {config['host']}:{config['port']}")
+    logger.info(f"🔧 Environment: {os.getenv('ENVIRONMENT', 'production')}")
+    logger.info(f"🔑 OpenAI API Key configured: {'Yes' if OPENAI_API_KEY else 'No'}")
+    logger.info(f"🔑 Pinecone API Key configured: {'Yes' if PINECONE_API_KEY else 'No'}")
+    logger.info(f"💾 Redis available: {'Yes' if HAS_REDIS else 'No'}")
     
-    try:
-        # Start the server without blocking model loading
-        uvicorn.run(app, **config)
-    except KeyboardInterrupt:
-        logger.info("👋 Graceful shutdown initiated")
-    except Exception as e:
-        logger.error(f"❌ Server startup failed: {e}")
-        sys.exit(1)
+    uvicorn.run("main:app", **config)
