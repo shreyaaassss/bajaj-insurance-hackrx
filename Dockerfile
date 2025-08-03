@@ -19,6 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8
+ENV PORT=8080
 
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash app
@@ -28,26 +29,22 @@ WORKDIR /home/app
 # Add local bin to PATH BEFORE installing packages
 ENV PATH="/home/app/.local/bin:${PATH}"
 
-# Copy requirements and install dependencies
-COPY --chown=app:app requirements.txt ./
+# Copy requirements and install dependencies - FIXED filename
+COPY --chown=app:app requirements-12.txt ./requirements.txt
 RUN pip install --user --no-cache-dir --upgrade -r requirements.txt
 
-# Copy application code - Updated filename
+# Copy application code
 COPY --chown=app:app main.py ./
 
 # Create necessary directories
 RUN mkdir -p uploads chroma_db
 
-# Health check with correct port variable
-HEALTHCHECK --interval=30s --timeout=30s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:${PORT}/health || exit 1
+# Health check with fixed port
+HEALTHCHECK --interval=30s --timeout=30s --start-period=180s --retries=5 \
+    CMD curl -f http://localhost:8080/health || exit 1
 
-# Expose port (Cloud Run will set this)
-EXPOSE ${PORT}
+# Expose port
+EXPOSE 8080
 
-# Updated CMD to use main.py and PORT environment variable correctly
-CMD exec uvicorn main:app \
-    --host 0.0.0.0 \
-    --port ${PORT} \
-    --timeout-keep-alive 300 \
-    --log-level info
+# FIXED CMD to use Python directly
+CMD ["python", "main.py"]
