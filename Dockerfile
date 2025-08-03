@@ -30,7 +30,7 @@ WORKDIR /home/app
 ENV PATH="/home/app/.local/bin:${PATH}"
 
 # Copy requirements and install dependencies - FIXED filename
-COPY --chown=app:app requirements-12.txt ./requirements.txt
+COPY --chown=app:app requirements.txt ./requirements.txt
 RUN pip install --user --no-cache-dir --upgrade -r requirements.txt
 
 # Copy application code
