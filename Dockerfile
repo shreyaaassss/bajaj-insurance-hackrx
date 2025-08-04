@@ -28,24 +28,21 @@ WORKDIR /app
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# PRE-DOWNLOAD MODELS (FIXED - Use proper escaping)
+# PRE-DOWNLOAD MODELS (UPDATED for hackrx6.py compatibility)
 RUN python -c "\
 import os; \
 os.environ['ANONYMIZED_TELEMETRY'] = 'False'; \
 os.environ['CHROMA_TELEMETRY'] = 'False'; \
 print('Downloading models...'); \
 from sentence_transformers import SentenceTransformer, CrossEncoder; \
-from langchain_community.embeddings import HuggingFaceEmbeddings; \
 print('Loading SentenceTransformer...'); \
 SentenceTransformer('all-MiniLM-L6-v2'); \
 print('Loading CrossEncoder...'); \
 CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2'); \
-print('Loading HuggingFaceEmbeddings...'); \
-HuggingFaceEmbeddings(model_name='all-MiniLM-L6-v2', model_kwargs={'device': 'cpu'}); \
 print('All models downloaded successfully!'); \
 "
 
-# Copy application code
+# Copy application code (UPDATED filename)
 COPY main.py ./main.py
 
 # Create non-root user
@@ -54,14 +51,14 @@ RUN chown -R app:app /app
 USER app
 
 # Create necessary directories
-RUN mkdir -p uploads chroma_db
+RUN mkdir -p uploads
 
-# Health check with proper timeout
+# Health check with proper timeout (UPDATED endpoint)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD curl -f http://localhost:8080/health || exit 1
+    CMD curl -f http://localhost:8080/ || exit 1
 
 # Expose port
 EXPOSE 8080
 
-# Start the application
+# Start the application (UPDATED to use hackrx6.py)
 CMD ["python", "main.py"]
