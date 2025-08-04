@@ -2740,7 +2740,7 @@ async def list_sessions(token: str = Depends(verify_token)):
 # HACKRX SPECIFIC ENDPOINT
 # ================================
 
-@app.post("/hackrx_run", summary="HackRx Run Endpoint")
+@app.post("/hackrx/run", summary="HackRx Run Endpoint")
 async def hackrx_run_endpoint(request: Request):
     """HackRx specific endpoint for batch processing"""
     try:
