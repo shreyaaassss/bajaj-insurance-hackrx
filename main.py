@@ -82,31 +82,30 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================================
-# CONFIGURATION
+# OPTIMIZED CONFIGURATION
 # ================================
 
 # Fixed optimal configuration
 HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 
-# Fixed optimal settings
+# OPTIMIZED CONFIGURATION FOR SPEED
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-CHUNK_SIZE = 1200
-CHUNK_OVERLAP = 200
-SEMANTIC_SEARCH_K = 24
-CONTEXT_DOCS = 18
+CHUNK_SIZE = 800  # Reduced from 1200
+CHUNK_OVERLAP = 100  # Reduced from 200
+SEMANTIC_SEARCH_K = 12  # Reduced from 24
+CONTEXT_DOCS = 8  # Reduced from 18
 CONFIDENCE_THRESHOLD = 0.15
-RERANK_TOP_K = 35
-MMR_LAMBDA = 0.75
-MAX_FILE_SIZE_MB = 100
-QUESTION_TIMEOUT = 25.0
+RERANK_TOP_K = 20  # Reduced from 35
+MAX_FILE_SIZE_MB = 50  # Reduced from 100
+QUESTION_TIMEOUT = 15.0  # Reduced from 25.0
 
-# Enhanced configuration for parallel processing
-OPTIMAL_BATCH_SIZE = 32  # Increased from 16 for better GPU utilization
-MAX_PARALLEL_BATCHES = 4  # Number of concurrent batches
-EMBEDDING_TIMEOUT = 120.0  # Increased timeout for parallel processing
-PARALLEL_PROCESSING_THRESHOLD = 64  # Enable parallel processing for >64 texts
+# PARALLEL PROCESSING - OPTIMIZED
+OPTIMAL_BATCH_SIZE = 16  # Reduced from 32
+MAX_PARALLEL_BATCHES = 2  # Reduced from 4
+EMBEDDING_TIMEOUT = 60.0  # Reduced from 120.0
+PARALLEL_PROCESSING_THRESHOLD = 32  # Reduced from 64
 
 # Supported file types
 SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.txt', '.md', '.csv']
@@ -144,6 +143,15 @@ DOMAIN_KEYWORDS = {
     ]
 }
 
+# GLOBAL MODEL STATE MANAGEMENT
+_models_loaded = False
+_model_lock = asyncio.Lock()
+_startup_complete = False
+
+# Cache for document processing
+_document_cache = {}
+_cache_ttl = 1800  # 30 minutes
+
 # Global models
 base_sentence_model = None
 reranker = None
@@ -173,7 +181,6 @@ class SmartCacheManager:
             self.document_chunk_cache = {}
             self.domain_cache = {}
             self.primary_available = False
-            # FIXED: Changed to INFO level to reduce log noise
             logger.info("📦 Using dict fallback caching (cachetools not available)")
         
         # Thread-safe access
@@ -269,7 +276,6 @@ class ParallelProgressTracker:
             elapsed = time.time() - self.start_time
             rate = self.completed_batches / elapsed if elapsed > 0 else 0
             eta = (self.total_batches - self.completed_batches) / rate if rate > 0 else 0
-            
             logger.info(f"🔄 Parallel batch {batch_idx + 1}/{self.total_batches} "
                        f"({self.completed_batches}/{self.total_batches}) "
                        f"Rate: {rate:.1f}/s ETA: {eta:.0f}s")
@@ -325,6 +331,7 @@ def convert_numpy_types(obj):
 def sanitize_for_json(data):
     """Recursively sanitize data for JSON serialization"""
     import numpy as np
+    
     if isinstance(data, dict):
         return {k: sanitize_for_json(v) for k, v in data.items()}
     elif isinstance(data, list):
@@ -350,7 +357,6 @@ class UnifiedLoader:
             r'drive\.google\.com/file/d/([a-zA-Z0-9-_]+)',
             r'docs\.google\.com'
         ]
-        
         self.dropbox_patterns = [
             r'dropbox\.com/s/([a-zA-Z0-9]+)',
             r'dropbox\.com/sh/([a-zA-Z0-9]+)'
@@ -374,6 +380,7 @@ class UnifiedLoader:
             
             logger.info(f"✅ Loaded {len(docs)} documents from {sanitize_pii(source)}")
             return docs
+            
         except Exception as e:
             logger.error(f"❌ Failed to load {sanitize_pii(source)}: {e}")
             raise
@@ -583,8 +590,8 @@ class AdaptiveTextSplitter:
         # Check cache using cache manager
         content_hash = self._calculate_content_hash(documents)
         cache_key = f"chunks_{content_hash}_{detected_domain}"
-        cached_chunks = CACHE_MANAGER.get_document_chunks(cache_key)
         
+        cached_chunks = CACHE_MANAGER.get_document_chunks(cache_key)
         if cached_chunks is not None:
             logger.info(f"📄 Using cached chunks: {len(cached_chunks)} chunks")
             return cached_chunks
@@ -637,6 +644,7 @@ class AdaptiveTextSplitter:
         
         # Ensure reasonable bounds
         adapted_size = max(600, min(2000, adapted_size))
+        
         return adapted_size, adapted_overlap
     
     def _split_document(self, document: Document, chunk_size: int, chunk_overlap: int) -> List[Document]:
@@ -707,6 +715,7 @@ class FAISSVectorStore:
             
             # Convert embeddings in chunks to avoid memory spikes
             chunk_size = 256  # Process 256 embeddings at a time
+            
             for i in range(0, len(embeddings), chunk_size):
                 end_idx = min(i + chunk_size, len(embeddings))
                 chunk_embeddings = np.array(embeddings[i:end_idx], dtype=np.float32)
@@ -753,7 +762,7 @@ class FAISSVectorStore:
                     results.append((doc, normalized_score))
             
             return results
-        
+            
         except Exception as e:
             logger.error(f"❌ Error in FAISS similarity search: {e}")
             return []
@@ -803,7 +812,7 @@ class DomainDetector:
                 return result
             
             return "general", confidence_threshold
-        
+            
         except Exception as e:
             logger.warning(f"⚠️ Domain detection error: {e}")
             return "general", confidence_threshold
@@ -921,7 +930,7 @@ class TokenProcessor:
             
             final_score = keyword_overlap * position_boost * length_penalty
             return min(1.0, final_score)
-        
+            
         except Exception as e:
             logger.warning(f"⚠️ Error calculating relevance: {e}")
             return 0.5
@@ -929,6 +938,7 @@ class TokenProcessor:
     def _truncate_content(self, content: str, max_tokens: int) -> str:
         """Smart content truncation"""
         max_chars = max_tokens * 4
+        
         if len(content) <= max_chars:
             return content
         
@@ -962,11 +972,22 @@ class RAGSystem:
         logger.info("🧹 RAGSystem cleaned up")
     
     async def process_documents(self, sources: List[str]) -> Dict[str, Any]:
-        """Process documents - CLEAR CACHES FIRST"""
+        """Process documents with smart caching - OPTIMIZED"""
         start_time = time.time()
         
-        # 🚨 CRITICAL: Clear all caches to prevent stale answers
-        CACHE_MANAGER.clear_all_caches()
+        # Generate document signature for caching
+        doc_signature = hashlib.md5(str(sorted(sources)).encode()).hexdigest()
+        
+        # Check if we already processed these exact documents
+        if hasattr(self, '_last_doc_signature') and self._last_doc_signature == doc_signature:
+            logger.info("📄 Documents already processed, skipping...")
+            return {"cached": True, "processing_time": 0.001}
+        
+        # Only clear caches if documents actually changed
+        if not hasattr(self, '_last_doc_signature') or self._last_doc_signature != doc_signature:
+            CACHE_MANAGER.clear_all_caches()
+            self._last_doc_signature = doc_signature
+            logger.info("🧹 Caches cleared for new documents")
         
         try:
             logger.info(f"📄 Processing {len(sources)} documents")
@@ -984,20 +1005,17 @@ class RAGSystem:
             if not raw_documents:
                 raise ValueError("No documents could be loaded")
             
-            # Detect domain
+            # Detect domain (fast)
             domain, domain_confidence = DOMAIN_DETECTOR.detect_domain(raw_documents)
             self.domain = domain
             
-            logger.info(f"🔍 Detected domain: {domain} (confidence: {domain_confidence:.2f})")
-            
-            # Split documents
+            # Split documents (optimized)
             self.documents = self.text_splitter.split_documents(raw_documents, domain)
             
-            # Setup retrievers
+            # Setup retrievers (parallel where possible)
             await self._setup_retrievers()
             
             processing_time = time.time() - start_time
-            
             result = {
                 'domain': domain,
                 'domain_confidence': float(domain_confidence),
@@ -1007,7 +1025,7 @@ class RAGSystem:
             
             logger.info(f"✅ Processing complete in {processing_time:.2f}s")
             return sanitize_for_json(result)
-        
+            
         except Exception as e:
             logger.error(f"❌ Document processing error: {e}")
             raise
@@ -1021,7 +1039,6 @@ class RAGSystem:
             if HAS_FAISS and self.documents:
                 try:
                     await ensure_models_ready()
-                    
                     self.vector_store = FAISSVectorStore(dimension=384)
                     self.vector_store.initialize()
                     
@@ -1031,8 +1048,8 @@ class RAGSystem:
                     
                     # Add to FAISS
                     await self.vector_store.add_documents(self.documents, embeddings)
-                    
                     logger.info("✅ FAISS vector store setup complete")
+                    
                 except Exception as e:
                     logger.warning(f"⚠️ FAISS setup failed: {e}")
                     self.vector_store = None
@@ -1045,9 +1062,10 @@ class RAGSystem:
                     )
                     self.bm25_retriever.k = min(RERANK_TOP_K, len(self.documents))
                     logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
+                    
             except Exception as e:
                 logger.warning(f"⚠️ BM25 retriever setup failed: {e}")
-        
+                
         except Exception as e:
             logger.error(f"❌ Retriever setup error: {e}")
     
@@ -1072,7 +1090,6 @@ class RAGSystem:
                     vector_results = await self.vector_store.similarity_search_with_score(
                         query_embedding, k=SEMANTIC_SEARCH_K
                     )
-                    
                     if vector_results:
                         retrieval_results.append(vector_results)
                 except Exception as e:
@@ -1084,7 +1101,6 @@ class RAGSystem:
                     # FIXED: BM25 null check
                     bm25_docs = await asyncio.to_thread(self.bm25_retriever.invoke, query) or []
                     bm25_results = []
-                    
                     for i, doc in enumerate(bm25_docs):
                         score = 1.0 - (i * 0.1)  # Decreasing scores
                         score = max(0.1, score)
@@ -1092,6 +1108,7 @@ class RAGSystem:
                     
                     if bm25_results:
                         retrieval_results.append(bm25_results)
+                        
                 except Exception as e:
                     logger.warning(f"⚠️ BM25 search failed: {e}")
             
@@ -1123,7 +1140,7 @@ class RAGSystem:
                 final_scores = final_scores[:top_k]
             
             return final_docs, final_scores
-        
+            
         except Exception as e:
             logger.error(f"❌ Retrieval error: {e}")
             return self.documents[:top_k], [0.5] * min(len(self.documents), top_k)
@@ -1146,12 +1163,11 @@ class RAGSystem:
                 doc_scores.append((doc, score))
             
             doc_scores.sort(key=lambda x: x[1], reverse=True)
-            
             docs = [doc for doc, score in doc_scores[:k]]
             scores = [score for doc, score in doc_scores[:k]]
             
             return docs, scores
-        
+            
         except Exception as e:
             logger.error(f"❌ Fallback search error: {e}")
             return self.documents[:k], [0.5] * min(len(self.documents), k)
@@ -1164,6 +1180,7 @@ class RAGSystem:
                 return documents[:top_k], scores[:top_k]
             
             await ensure_models_ready()
+            
             if not reranker:
                 return documents[:top_k], scores[:top_k]
             
@@ -1190,7 +1207,7 @@ class RAGSystem:
             final_scores = [score for _, score in scored_docs[:top_k]]
             
             return final_docs, final_scores
-        
+            
         except Exception as e:
             logger.error(f"❌ Semantic reranking error: {e}")
             return documents[:top_k], scores[:top_k]
@@ -1236,7 +1253,6 @@ class RAGSystem:
             answer = await self._generate_response(query, context, self.domain, confidence)
             
             processing_time = time.time() - start_time
-            
             result = {
                 "query": query,
                 "answer": answer,
@@ -1247,7 +1263,7 @@ class RAGSystem:
             }
             
             return sanitize_for_json(result)
-        
+            
         except Exception as e:
             logger.error(f"❌ Query processing error: {e}")
             return {
@@ -1270,7 +1286,6 @@ class RAGSystem:
             # FIXED: Handle FAISS inner product scores > 1.0
             if np.max(scores_array) > 1.0:
                 scores_array = scores_array / np.max(scores_array)
-            
             scores_array = np.clip(scores_array, 0.0, 1.0)
             
             max_score = np.max(scores_array)
@@ -1299,7 +1314,7 @@ class RAGSystem:
                     break
             
             return min(1.0, max(0.0, confidence))
-        
+            
         except Exception as e:
             logger.warning(f"⚠️ Confidence calculation error: {e}")
             return 0.3
@@ -1367,7 +1382,7 @@ Please provide a comprehensive answer based on the context above."""
             )
             
             return response.choices[0].message.content.strip()
-        
+            
         except asyncio.TimeoutError:
             logger.error(f"❌ Response generation timeout after {QUESTION_TIMEOUT}s")
             return "I apologize, but the response generation took too long. Please try again with a simpler question."
@@ -1421,11 +1436,11 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
     """Process embeddings with parallel batch processing - OPTIMIZED"""
     if not texts:
         return []
-
+    
     results = []
     uncached_texts = []
     uncached_indices = []
-
+    
     # Check cache first (unchanged)
     for i, text in enumerate(texts):
         text_hash = hashlib.md5(text.encode()).hexdigest()
@@ -1435,13 +1450,13 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
         else:
             uncached_texts.append(text)
             uncached_indices.append(i)
-
+    
     # Process uncached texts with PARALLEL batching
     if uncached_texts:
         try:
             await ensure_models_ready()
+            
             if base_sentence_model:
-                
                 # PARALLEL PROCESSING - KEY OPTIMIZATION
                 if len(uncached_texts) > PARALLEL_PROCESSING_THRESHOLD:
                     logger.info(f"🚀 Processing {len(uncached_texts)} embeddings in {(len(uncached_texts)-1)//OPTIMAL_BATCH_SIZE + 1} parallel batches")
@@ -1466,7 +1481,7 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
                         
                         # Submit all batches for parallel processing
                         future_to_batch = {
-                            executor.submit(encode_func, batch): batch_idx 
+                            executor.submit(encode_func, batch): batch_idx
                             for batch_idx, batch in enumerate(batches)
                         }
                         
@@ -1483,16 +1498,17 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
                                 # Fallback to zero vectors
                                 batch_size = len(batches[batch_idx])
                                 batch_results[batch_idx] = np.zeros((batch_size, 384))
-                    
-                    # Flatten results
-                    embeddings = []
-                    for batch_result in batch_results:
-                        if batch_result is not None:
-                            embeddings.extend(batch_result)
-                
+                        
+                        # Flatten results
+                        embeddings = []
+                        for batch_result in batch_results:
+                            if batch_result is not None:
+                                embeddings.extend(batch_result)
+                                
                 elif len(uncached_texts) > OPTIMAL_BATCH_SIZE:
                     logger.info(f"🔄 Processing {len(uncached_texts)} embeddings in batches of {OPTIMAL_BATCH_SIZE}")
                     embeddings = []
+                    
                     for i in range(0, len(uncached_texts), OPTIMAL_BATCH_SIZE):
                         batch = uncached_texts[i:i + OPTIMAL_BATCH_SIZE]
                         batch_embeddings = await asyncio.to_thread(
@@ -1503,7 +1519,7 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
                         )
                         embeddings.extend(batch_embeddings)
                         logger.info(f"✅ Processed batch {i//OPTIMAL_BATCH_SIZE + 1}/{(len(uncached_texts)-1)//OPTIMAL_BATCH_SIZE + 1}")
-                
+                        
                 else:
                     # Process normally for small batches
                     embeddings = await asyncio.to_thread(
@@ -1512,29 +1528,30 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
                         show_progress_bar=False,
                         convert_to_numpy=True
                     )
-
+                
                 # Cache embeddings (unchanged)
                 for text, embedding in zip(uncached_texts, embeddings):
                     text_hash = hashlib.md5(text.encode()).hexdigest()
                     CACHE_MANAGER.set_embedding(text_hash, embedding)
-
+                
                 # Add to results
                 for i, embedding in zip(uncached_indices, embeddings):
                     results.append((i, embedding))
-
+                    
             else:
                 logger.warning("⚠️ No embedding model available, using zero vectors")
                 for i in uncached_indices:
                     results.append((i, np.zeros(384)))
-
+                    
         except Exception as e:
             logger.error(f"❌ Embedding error: {e}")
             for i in uncached_indices:
                 results.append((i, np.zeros(384)))
-
+    
     # Sort results by original order
     results.sort(key=lambda x: x[0])
     embeddings = [embedding for _, embedding in results]
+    
     return embeddings
 
 async def get_query_embedding(query: str) -> np.ndarray:
@@ -1549,6 +1566,7 @@ async def get_query_embedding(query: str) -> np.ndarray:
     
     try:
         await ensure_models_ready()
+        
         if base_sentence_model:
             # FIXED: Off-load blocking encoder call to thread
             embedding = await asyncio.to_thread(
@@ -1556,13 +1574,12 @@ async def get_query_embedding(query: str) -> np.ndarray:
                 query,
                 convert_to_numpy=True
             )
-            
             CACHE_MANAGER.set_embedding(query_hash, embedding)
             return embedding
         else:
             logger.warning("⚠️ No embedding model available for query")
             return np.zeros(384)
-    
+            
     except Exception as e:
         logger.error(f"❌ Query embedding error: {e}")
         return np.zeros(384)
@@ -1586,22 +1603,50 @@ async def ensure_openai_ready():
         raise HTTPException(status_code=503, detail="OpenAI API key not configured")
 
 async def ensure_models_ready():
-    """Load pre-downloaded models quickly"""
-    global base_sentence_model, reranker
+    """Load models only once per container lifecycle - OPTIMIZED"""
+    global base_sentence_model, reranker, _models_loaded, _startup_complete
     
-    if base_sentence_model is None:
-        try:
-            base_sentence_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
-            logger.info("✅ Sentence transformer loaded")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load sentence transformer: {e}")
+    if _models_loaded and _startup_complete:
+        return
     
-    if reranker is None:
+    async with _model_lock:
+        if _models_loaded and _startup_complete:  # Double-check pattern
+            return
+            
+        logger.info("🔄 Loading pre-downloaded models...")
+        start_time = time.time()
+        
         try:
-            reranker = CrossEncoder(RERANKER_MODEL_NAME)
-            logger.info("✅ Reranker loaded")
+            # Load sentence transformer with CPU optimization
+            if base_sentence_model is None:
+                base_sentence_model = SentenceTransformer(
+                    EMBEDDING_MODEL_NAME,
+                    device='cpu',
+                    cache_folder=os.getenv('SENTENCE_TRANSFORMERS_HOME', None)
+                )
+                # Warm up the model
+                _ = base_sentence_model.encode("warmup", show_progress_bar=False)
+                logger.info("✅ Sentence transformer loaded and warmed up")
+            
+            # Load reranker with optimization
+            if reranker is None:
+                reranker = CrossEncoder(
+                    RERANKER_MODEL_NAME,
+                    max_length=256,  # Reduced for speed
+                    device='cpu'
+                )
+                # Warm up reranker
+                _ = reranker.predict([["warmup", "test"]])
+                logger.info("✅ Reranker loaded and warmed up")
+            
+            _models_loaded = True
+            _startup_complete = True
+            load_time = time.time() - start_time
+            logger.info(f"✅ All models ready in {load_time:.2f}s")
+            
         except Exception as e:
-            logger.warning(f"⚠️ Failed to load reranker: {e}")
+            logger.error(f"❌ Failed to load models: {e}")
+            raise
 
 # ================================
 # GLOBAL INSTANCES
@@ -1615,20 +1660,31 @@ DOMAIN_DETECTOR = DomainDetector()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
+    """Application lifespan manager - OPTIMIZED"""
     # Startup
-    logger.info("🚀 Starting RAG System...")
+    logger.info("🚀 Starting HackRx RAG System...")
+    start_time = time.time()
     
-    if OPENAI_API_KEY:
-        await ensure_openai_ready()
-    
-    await ensure_models_ready()
-    logger.info("✅ System initialized")
+    try:
+        # Load models first (critical path)
+        await ensure_models_ready()
+        
+        # Initialize OpenAI client
+        if OPENAI_API_KEY:
+            await ensure_openai_ready()
+        
+        startup_time = time.time() - start_time
+        logger.info(f"✅ System fully initialized in {startup_time:.2f}s")
+        
+    except Exception as e:
+        logger.error(f"❌ Startup failed: {e}")
+        raise
     
     yield
     
     # Shutdown
     logger.info("🔄 Shutting down system...")
+    _document_cache.clear()
     CACHE_MANAGER.clear_all_caches()
     
     if openai_client and hasattr(openai_client, 'close'):
@@ -1677,60 +1733,82 @@ async def get_cache_stats():
 
 @app.post("/hackrx/run")
 async def hackrx_run_endpoint(request: Request):
-    """HackRx specific endpoint - SIMPLIFIED RESPONSE FORMAT"""
+    """HackRx endpoint with PARALLEL PROCESSING and CACHING"""
     start_time = time.time()
     
-    # Simple auth check
     if not simple_auth_check(request):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     
     try:
-        # Parse request data
         data = await request.json()
-        
-        # Extract documents URL and questions (HackRx format)
         documents_url = data.get("documents")
         questions = data.get("questions", [])
         
         if not questions:
             raise HTTPException(status_code=400, detail="No questions provided")
-        
         if not documents_url:
             raise HTTPException(status_code=400, detail="No documents URL provided")
         
-        # Validate URL
-        if not validate_url_scheme(documents_url):
-            raise HTTPException(status_code=400, detail="Invalid or unsupported URL scheme")
+        # Check document cache first
+        doc_cache_key = hashlib.md5(documents_url.encode()).hexdigest()
+        current_time = time.time()
         
-        # Create RAG system
-        rag_system = RAGSystem()
+        cached_rag_system = None
+        if doc_cache_key in _document_cache:
+            cached_data, timestamp = _document_cache[doc_cache_key]
+            if current_time - timestamp < _cache_ttl:
+                logger.info("🚀 Using cached document processing")
+                cached_rag_system = cached_data
         
-        try:
-            # Process the document from URL
+        # Create or use cached RAG system
+        if cached_rag_system:
+            rag_system = cached_rag_system
+        else:
+            rag_system = RAGSystem()
+            logger.info(f"📄 Processing document: {sanitize_pii(documents_url)}")
             await rag_system.process_documents([documents_url])
             
-            # Process all questions
-            answers = []
-            for question in questions:
-                try:
-                    result = await rag_system.query(question)
-                    answers.append(result["answer"])
-                except Exception as e:
-                    logger.error(f"❌ Error processing question '{question}': {e}")
-                    answers.append(f"Error processing question: {sanitize_pii(str(e))}")
+            # Cache the processed system
+            _document_cache[doc_cache_key] = (rag_system, current_time)
             
-            # SIMPLIFIED RESPONSE FORMAT - ONLY ANSWERS ARRAY
-            return {"answers": answers}
+            # Cleanup old cache entries
+            if len(_document_cache) > 10:
+                oldest_key = min(_document_cache.keys(), 
+                               key=lambda k: _document_cache[k][1])
+                del _document_cache[oldest_key]
         
-        finally:
-            # Cleanup
-            await rag_system.cleanup()
-    
-    except HTTPException:
-        raise
+        # PARALLEL QUESTION PROCESSING
+        logger.info(f"❓ Processing {len(questions)} questions in parallel...")
+        
+        async def process_single_question(question: str) -> str:
+            try:
+                result = await rag_system.query(question)
+                return result["answer"]
+            except Exception as e:
+                logger.error(f"❌ Error processing question: {e}")
+                return f"Error processing question: {str(e)}"
+        
+        # Control concurrency to avoid overwhelming the system
+        semaphore = asyncio.Semaphore(3)  # Max 3 concurrent questions
+        
+        async def bounded_process(question: str) -> str:
+            async with semaphore:
+                return await process_single_question(question)
+        
+        # Process all questions concurrently
+        answers = await asyncio.gather(
+            *[bounded_process(q) for q in questions],
+            return_exceptions=False
+        )
+        
+        processing_time = time.time() - start_time
+        logger.info(f"✅ Completed {len(questions)} questions in {processing_time:.2f}s")
+        
+        return {"answers": answers}
+        
     except Exception as e:
         logger.error(f"❌ HackRx endpoint error: {e}")
-        raise HTTPException(status_code=500, detail=f"Processing failed: {sanitize_pii(str(e))}")
+        raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 # ================================
 # ERROR HANDLERS - STANDARDIZED
