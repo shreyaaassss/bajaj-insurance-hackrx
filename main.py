@@ -1115,4 +1115,4 @@ if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
     logger.info(f"🚀 Starting HackRx RAG System on port {port}")
-    uvicorn.run("hackrx7:app", host="0.0.0.0", port=port, reload=False, log_level="info")
+    uvicorn.run("main:app", host="0.0.0.0", port=port, reload=False, log_level="info")
