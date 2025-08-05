@@ -83,10 +83,11 @@ logger = logging.getLogger(__name__)
 DOCUMENT_CACHE = {}  # key: document_url, value: { "domain": ..., "domain_confidence": ..., "documents": ..., "vector_store": ..., "bm25_retriever": ...}
 DOCUMENT_CACHE_LOCK = threading.RLock()
 
-def get_or_process_document(documents_url, rag_system):
-    """Get cached document processing results or process if not cached"""
+async def get_or_process_document_async(documents_url, rag_system):
+    """Get cached document processing results or process if not cached - ASYNC VERSION"""
     with DOCUMENT_CACHE_LOCK:
         cached = DOCUMENT_CACHE.get(documents_url)
+    
     if cached:
         logger.info(f"📦 Using cached document processing for {sanitize_pii(documents_url)}")
         # Restore cached state to the RAGSystem instance
@@ -103,9 +104,8 @@ def get_or_process_document(documents_url, rag_system):
     
     # Not in cache, process and save
     logger.info(f"🔄 Processing new document: {sanitize_pii(documents_url)}")
-    result = asyncio.get_event_loop().run_until_complete(
-        rag_system.process_documents([documents_url])
-    )
+    # FIXED: Use await instead of run_until_complete
+    result = await rag_system.process_documents([documents_url])
     
     # Store items in cache
     with DOCUMENT_CACHE_LOCK:
@@ -119,6 +119,7 @@ def get_or_process_document(documents_url, rag_system):
         }
     logger.info(f"💾 Cached document processing results for {sanitize_pii(documents_url)}")
     return result
+
 
 # ================================
 # CONFIGURATION
@@ -1302,7 +1303,7 @@ async def get_cache_stats_endpoint():
 
 @app.post("/hackrx/run")
 async def hackrx_run_endpoint(request: Request):
-    """HackRx specific endpoint with persistent document caching"""
+    """HackRx specific endpoint with persistent document caching - FIXED VERSION"""
     if not simple_auth_check(request):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     
@@ -1323,8 +1324,8 @@ async def hackrx_run_endpoint(request: Request):
         rag_system = RAGSystem()
         
         try:
-            # Use persistent document-processing cache
-            doc_state = get_or_process_document(documents_url, rag_system)
+            # FIXED: Use the async version with await
+            doc_state = await get_or_process_document_async(documents_url, rag_system)
             
             answers = []
             for question in questions:
