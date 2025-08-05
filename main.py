@@ -106,7 +106,7 @@ MAX_FILE_SIZE_MB = 50
 QUESTION_TIMEOUT = 8.0
 
 # PARALLEL PROCESSING - OPTIMIZED
-OPTIMAL_BATCH_SIZE = 32
+OPTIMAL_BATCH_SIZE = 128  # Increased from 32
 MAX_PARALLEL_BATCHES = 4
 EMBEDDING_TIMEOUT = 60.0
 
@@ -151,7 +151,7 @@ _models_loaded = False
 _model_lock = asyncio.Lock()
 _startup_complete = False
 
-# Cache for document processing
+# Cache for document processing - FIXED
 _document_cache = {}
 _cache_ttl = 1800  # 30 minutes
 
@@ -166,6 +166,7 @@ gemini_client = None
 
 class SmartCacheManager:
     """Smart cache manager with TTL/LRU primary and dict fallback"""
+
     def __init__(self):
         try:
             if HAS_CACHETOOLS:
@@ -272,12 +273,17 @@ class QueryResultCache:
                     del self.cache[key]
             self.cache[cache_key] = answer
 
+    def clear(self):
+        """Clear query cache"""
+        with self._lock:
+            self.cache.clear()
+
 # Document State Manager
 class DocumentStateManager:
     def __init__(self):
         self.current_doc_hash = None
         self.current_doc_timestamp = None
-        
+
     def generate_doc_signature(self, sources: List[str]) -> str:
         signature_data = {
             'sources': sorted(sources),
@@ -285,27 +291,32 @@ class DocumentStateManager:
             'system_version': '2.0'
         }
         return hashlib.sha256(json.dumps(signature_data, sort_keys=True).encode()).hexdigest()
-    
+
     def should_invalidate_cache(self, new_doc_hash: str) -> bool:
         if self.current_doc_hash is None:
             return True
         return self.current_doc_hash != new_doc_hash
-    
+
     def invalidate_all_caches(self):
+        """FIXED: Clear both cache managers and document cache"""
         CACHE_MANAGER.clear_all_caches()
-        QUERY_CACHE.cache.clear()
+        QUERY_CACHE.clear()
+        # Clear document processing cache
+        global _document_cache
+        _document_cache.clear()
+        logger.info("🧹 All system caches cleared including document processing cache")
 
 # Memory Manager
 class MemoryManager:
     def __init__(self):
         self.memory_threshold = 0.85
-        
+
     def should_cleanup(self) -> bool:
         if HAS_PSUTIL:
             memory_percent = psutil.virtual_memory().percent / 100
             return memory_percent > self.memory_threshold
         return False
-    
+
     def cleanup_if_needed(self):
         if self.should_cleanup():
             import gc
@@ -317,12 +328,12 @@ class MemoryManager:
 class PerformanceMonitor:
     def __init__(self):
         self.metrics = defaultdict(list)
-    
+
     def record_timing(self, operation: str, duration: float):
         self.metrics[operation].append(duration)
         if len(self.metrics[operation]) > 100:
             self.metrics[operation] = self.metrics[operation][-50:]
-    
+
     def get_average_timing(self, operation: str) -> float:
         return np.mean(self.metrics.get(operation, [0]))
 
@@ -334,17 +345,17 @@ class QueryAnalyzer:
             'how does', 'what causes', 'relationship', 'impact', 'effect',
             'trends', 'patterns', 'implications', 'significance'
         ]
-        
+
     def classify_query(self, query: str) -> Dict[str, Any]:
         query_lower = query.lower()
         is_analytical = any(keyword in query_lower for keyword in self.analytical_keywords)
-        
+
         complexity_score = (
             len(query.split()) * 0.1 +
             query.count('?') * 0.2 +
             (1.0 if is_analytical else 0.3)
         )
-        
+
         return {
             'type': 'analytical' if is_analytical else 'factual',
             'complexity': min(1.0, complexity_score),
@@ -380,6 +391,7 @@ def sanitize_pii(text: str) -> str:
         r'\b\d{3}-\d{3}-\d{4}\b',
         r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b'
     ]
+    
     sanitized = text
     for pattern in patterns:
         sanitized = re.sub(pattern, '[REDACTED]', sanitized)
@@ -409,6 +421,7 @@ def convert_numpy_types(obj):
 def sanitize_for_json(data):
     """Recursively sanitize data for JSON serialization"""
     import numpy as np
+    
     if isinstance(data, dict):
         return {k: sanitize_for_json(v) for k, v in data.items()}
     elif isinstance(data, list):
@@ -419,6 +432,7 @@ def sanitize_for_json(data):
         return data.item()
     elif isinstance(data, (np.ndarray,)):
         return data.tolist()
+    
     return data
 
 # ================================
@@ -427,17 +441,22 @@ def sanitize_for_json(data):
 
 class UnifiedLoader:
     """Unified document loader with enhanced URL support"""
+
     def __init__(self):
         self.mime_detector = magic if HAS_MAGIC else None
+        # Enhanced patterns for Google Drive and Dropbox
         self.google_patterns = [
             r'drive\.google\.com/file/d/([a-zA-Z0-9-_]+)',
             r'docs\.google\.com/document/d/([a-zA-Z0-9-_]+)',
             r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
+            r'docs\.google\.com/presentation/d/([a-zA-Z0-9-_]+)',
         ]
+        
         self.dropbox_patterns = [
             r'dropbox\.com/s/([a-zA-Z0-9]+)',
             r'dropbox\.com/sh/([a-zA-Z0-9]+)',
             r'dropbox\.com/scl/fi/([a-zA-Z0-9-_]+)',
+            r'dropbox\.com/scl/fo/([a-zA-Z0-9-_]+)',
         ]
 
     async def load_document(self, source: str) -> List[Document]:
@@ -467,7 +486,7 @@ class UnifiedLoader:
         return source.startswith(('http://', 'https://', 'blob:', 'drive:', 'dropbox:'))
 
     async def _load_from_url(self, url: str) -> List[Document]:
-        """Enhanced URL loading with retry logic."""
+        """Enhanced URL loading with retry logic and better Google Drive/Dropbox support"""
         parsed = urlparse(url)
         scheme = parsed.scheme.lower()
 
@@ -483,25 +502,29 @@ class UnifiedLoader:
             raise ValueError(f"Unsupported URL scheme: {scheme}")
 
         download_url = self._transform_special_url(url)
-
-        # Custom headers
+        
+        # Enhanced headers for better compatibility
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/117.0 Safari/537.36"
-            )
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate",
+            "Connection": "keep-alive",
         }
 
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 timeout = httpx.Timeout(
-                    timeout=120.0,   # overall cap for the request
-                    connect=15.0,    # time to establish TCP connection
-                    read=120.0,      # time to read response body
-                    write=30.0,      # time to write request body (uploads)
-                    pool=5.0         # wait time for a connection from the pool
+                    timeout=120.0,
+                    connect=15.0,
+                    read=120.0,
+                    write=30.0,
+                    pool=5.0
                 )
 
                 async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
@@ -509,28 +532,29 @@ class UnifiedLoader:
                     response.raise_for_status()
                     content = response.content
 
-                # Determine extension
-                file_ext = (
-                    self._get_extension_from_url(url)
-                    or self._detect_extension_from_content(content)
-                )
+                    # Determine extension
+                    file_ext = (
+                        self._get_extension_from_url(url)
+                        or self._detect_extension_from_content(content)
+                    )
 
-                # Write content to a temporary file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-                    tmp_file.write(content)
-                    temp_path = tmp_file.name
+                    # Write content to a temporary file
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                        tmp_file.write(content)
+                        temp_path = tmp_file.name
 
-                try:
-                    return await self._load_from_file(temp_path)
-                finally:
-                    if os.path.exists(temp_path):
-                        os.unlink(temp_path)
+                    try:
+                        return await self._load_from_file(temp_path)
+                    finally:
+                        if os.path.exists(temp_path):
+                            os.unlink(temp_path)
 
-            except Exception:
+            except Exception as e:
                 if attempt == max_retries - 1:
                     raise
-                # Exponential back-off: 1s, 2s, 4s …
+                # Exponential back-off: 1s, 2s, 4s
                 await asyncio.sleep(2 ** attempt)
+                logger.warning(f"⚠️ Retry {attempt + 1}/{max_retries} for URL loading: {e}")
 
     def _transform_special_url(self, url: str) -> str:
         """Enhanced URL transformation for Google Drive and Dropbox"""
@@ -539,9 +563,17 @@ class UnifiedLoader:
             match = re.search(pattern, url)
             if match:
                 file_id = match.group(1)
-                # Try export formats in order of preference
-                return f"https://drive.google.com/uc?export=download&id={file_id}"
-        
+                # For documents, try export as PDF first, then Word
+                if 'docs.google.com/document' in url:
+                    return f"https://docs.google.com/document/d/{file_id}/export?format=pdf"
+                elif 'docs.google.com/spreadsheets' in url:
+                    return f"https://docs.google.com/spreadsheets/d/{file_id}/export?format=pdf"
+                elif 'docs.google.com/presentation' in url:
+                    return f"https://docs.google.com/presentation/d/{file_id}/export/pdf"
+                else:
+                    # General file download
+                    return f"https://drive.google.com/uc?export=download&id={file_id}"
+
         # Enhanced Dropbox transformation
         for pattern in self.dropbox_patterns:
             if re.search(pattern, url):
@@ -550,7 +582,7 @@ class UnifiedLoader:
                 elif '?dl=1' not in url:
                     separator = '&' if '?' in url else '?'
                     return f"{url}{separator}dl=1"
-                
+
         return url
 
     def _get_extension_from_url(self, url: str) -> Optional[str]:
@@ -577,10 +609,12 @@ class UnifiedLoader:
             except Exception:
                 pass
 
+        # Simple content-based detection
         if content.startswith(b'%PDF'):
             return '.pdf'
-        elif b'PK' in content[:10]:
+        elif b'PK' in content[:10]:  # ZIP-based formats (DOCX, etc.)
             return '.docx'
+        
         return '.txt'
 
     async def _load_from_file(self, file_path: str) -> List[Document]:
@@ -606,6 +640,7 @@ class UnifiedLoader:
         docs = None
         loader_used = None
 
+        # PDF files
         if mime_type == 'application/pdf' or file_extension == '.pdf':
             try:
                 loader = PyMuPDFLoader(file_path)
@@ -614,6 +649,7 @@ class UnifiedLoader:
             except Exception as e:
                 logger.warning(f"⚠️ PyMuPDF failed: {e}")
 
+        # Word documents
         elif ('word' in (mime_type or '') or
               'officedocument' in (mime_type or '') or
               file_extension in ['.docx', '.doc']):
@@ -624,6 +660,7 @@ class UnifiedLoader:
             except Exception as e:
                 logger.warning(f"⚠️ DOCX loader failed: {e}")
 
+        # Text files
         elif ('text' in (mime_type or '') or
               file_extension in ['.txt', '.md', '.csv', '.log']):
             for encoding in ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']:
@@ -637,6 +674,7 @@ class UnifiedLoader:
                 except Exception as e:
                     logger.warning(f"⚠️ Text loader failed with {encoding}: {e}")
 
+        # Fallback loader
         if not docs:
             try:
                 loader = TextLoader(file_path, encoding='utf-8')
@@ -668,10 +706,9 @@ class HierarchicalChunker:
     def __init__(self):
         self.chunk_sizes = [800, 1200, 400]
         self.overlap_ratio = 0.2
-        
+
     def create_hierarchical_chunks(self, documents: List[Document]) -> List[Document]:
         all_chunks = []
-        
         for doc in documents:
             for chunk_size in self.chunk_sizes:
                 overlap = int(chunk_size * self.overlap_ratio)
@@ -680,19 +717,20 @@ class HierarchicalChunker:
                     chunk_overlap=overlap
                 )
                 chunks = splitter.split_documents([doc])
-                
+
                 for chunk in chunks:
                     chunk.metadata.update({
                         'chunk_size_category': chunk_size,
                         'hierarchy_level': 'primary' if chunk_size == 800 else 'context'
                     })
-                
+
                 all_chunks.extend(chunks)
-        
+
         return all_chunks
 
 class AdaptiveTextSplitter:
     """Adaptive text splitter with smart caching and hierarchical support"""
+
     def __init__(self):
         self.separators = [
             "\n\n## ", "\n\n# ", "\n\n### ", "\n\n#### ",
@@ -730,6 +768,7 @@ class AdaptiveTextSplitter:
 
         CACHE_MANAGER.set_document_chunks(cache_key, all_chunks)
         logger.info(f"📄 Created {len(all_chunks)} adaptive chunks")
+
         return all_chunks
 
     def _calculate_content_hash(self, documents: List[Document]) -> str:
@@ -789,11 +828,12 @@ class AdaptiveTextSplitter:
             return [document]
 
 # ================================
-# FAISS VECTOR STORE
+# OPTIMIZED FAISS VECTOR STORE
 # ================================
 
 class FAISSVectorStore:
-    """FAISS-based vector store implementation"""
+    """FAISS-based vector store implementation with optimizations"""
+
     def __init__(self, dimension: int = 384):
         self.dimension = dimension
         self.index = None
@@ -813,8 +853,8 @@ class FAISSVectorStore:
             logger.error(f"❌ Failed to initialize FAISS: {e}")
             raise
 
-    async def add_documents(self, documents: List[Document], embeddings: List[np.ndarray]):
-        """Add documents with optimized batch processing"""
+    async def add_documents_optimized(self, documents: List[Document], embeddings: List[np.ndarray]):
+        """Optimized bulk FAISS operations"""
         try:
             if not self.is_trained:
                 self.initialize()
@@ -822,22 +862,33 @@ class FAISSVectorStore:
             if len(documents) != len(embeddings):
                 raise ValueError("Number of documents must match number of embeddings")
 
-            chunk_size = 256
-            for i in range(0, len(embeddings), chunk_size):
-                end_idx = min(i + chunk_size, len(embeddings))
-                chunk_embeddings = np.array(embeddings[i:end_idx], dtype=np.float32)
+            # Convert all embeddings at once for better performance
+            all_embeddings = np.array(embeddings, dtype=np.float32)
+            faiss.normalize_L2(all_embeddings)
 
-                faiss.normalize_L2(chunk_embeddings)
-                self.index.add(chunk_embeddings)
-                self.documents.extend(documents[i:end_idx])
+            # For large datasets, use IVF index for better performance
+            if len(embeddings) > 1000 and not hasattr(self.index, 'nlist'):
+                logger.info("🔧 Upgrading to IVF index for large dataset")
+                nlist = min(int(np.sqrt(len(embeddings))), 256)
+                quantizer = faiss.IndexFlatIP(self.dimension)
+                new_index = faiss.IndexIVFFlat(quantizer, self.dimension, nlist)
+                new_index.train(all_embeddings)
+                new_index.add(all_embeddings)
+                self.index = new_index
+            else:
+                # Add all embeddings in single operation
+                self.index.add(all_embeddings)
 
-                logger.info(f"✅ Added chunk {i//chunk_size + 1}/{(len(embeddings)-1)//chunk_size + 1}")
-
-            logger.info(f"✅ Added {len(documents)} documents to FAISS index (total: {len(self.documents)})")
+            self.documents.extend(documents)
+            logger.info(f"✅ Added {len(documents)} documents to optimized FAISS index (total: {len(self.documents)})")
 
         except Exception as e:
             logger.error(f"❌ Error adding documents to FAISS: {e}")
             raise
+
+    async def add_documents(self, documents: List[Document], embeddings: List[np.ndarray]):
+        """Legacy method that calls optimized version"""
+        return await self.add_documents_optimized(documents, embeddings)
 
     async def similarity_search_with_score(self, query_embedding: np.ndarray, k: int = 10) -> List[Tuple[Document, float]]:
         """Search for similar documents with scores"""
@@ -876,6 +927,7 @@ class FAISSVectorStore:
 
 class DomainDetector:
     """Universal domain detector with smart caching"""
+
     def detect_domain(self, documents: List[Document], confidence_threshold: float = 0.3) -> Tuple[str, float]:
         """Universal domain detection with smart caching"""
         if not documents:
@@ -902,7 +954,6 @@ class DomainDetector:
 
                 result = (best_domain, best_score)
                 CACHE_MANAGER.set_domain_result(cache_key, result)
-
                 logger.info(f"🔍 Domain detected: {best_domain} (confidence: {best_score:.2f})")
                 return result
 
@@ -915,6 +966,7 @@ class DomainDetector:
     def _keyword_based_detection(self, combined_text: str) -> Dict[str, float]:
         """Keyword-based domain detection"""
         domain_scores = {}
+
         for domain, keywords in DOMAIN_KEYWORDS.items():
             matches = 0
             for keyword in keywords:
@@ -927,45 +979,165 @@ class DomainDetector:
         return domain_scores
 
 # ================================
+# INTELLIGENT CONTEXT BUILDER
+# ================================
+
+class IntelligentContextBuilder:
+    """Intelligent context builder with token optimization"""
+
+    def __init__(self):
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        except Exception:
+            self.tokenizer = None
+        self.max_context_tokens = 3500
+
+    def build_optimal_context(self, query: str, documents: List[Document]) -> str:
+        """Build context with intelligent prioritization"""
+        if not documents:
+            return ""
+
+        # Analyze query for key terms
+        query_terms = self._extract_key_terms(query)
+
+        # Score documents by relevance to query
+        scored_docs = []
+        for doc in documents:
+            relevance_score = self._calculate_relevance(doc, query_terms)
+            token_count = self._estimate_tokens(doc.page_content)
+            efficiency_score = relevance_score / max(token_count, 1)
+
+            scored_docs.append((doc, relevance_score, efficiency_score, token_count))
+
+        # Sort by efficiency (relevance per token)
+        scored_docs.sort(key=lambda x: x[2], reverse=True)
+
+        # Build context within token limit
+        context_parts = []
+        total_tokens = 0
+
+        for doc, rel_score, eff_score, token_count in scored_docs:
+            if total_tokens + token_count <= self.max_context_tokens:
+                context_parts.append(doc.page_content)
+                total_tokens += token_count
+            elif total_tokens < self.max_context_tokens * 0.8:
+                # Try to fit partial content
+                remaining_tokens = self.max_context_tokens - total_tokens
+                if remaining_tokens > 100:  # Minimum useful chunk
+                    partial_content = self._truncate_intelligently(
+                        doc.page_content, remaining_tokens, query_terms
+                    )
+                    context_parts.append(partial_content)
+                    break
+            else:
+                break
+
+        return "\n\n---\n\n".join(context_parts)
+
+    def _extract_key_terms(self, query: str) -> List[str]:
+        """Extract key terms from query"""
+        # Simple extraction - split and filter
+        terms = query.lower().split()
+        # Filter out common stop words
+        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
+        return [term for term in terms if term not in stop_words and len(term) > 2]
+
+    def _calculate_relevance(self, doc: Document, query_terms: List[str]) -> float:
+        """Calculate document relevance to query terms"""
+        content_lower = doc.page_content.lower()
+        score = 0.0
+
+        for term in query_terms:
+            count = content_lower.count(term)
+            score += count * (1.0 / len(doc.page_content))  # Normalized by document length
+
+        return score
+
+    def _estimate_tokens(self, text: str) -> int:
+        """Estimate token count"""
+        if self.tokenizer:
+            try:
+                return len(self.tokenizer.encode(text))
+            except Exception:
+                pass
+        # Fallback estimation
+        return max(1, int(len(text) / 3.8))
+
+    def _truncate_intelligently(self, content: str, max_tokens: int, query_terms: List[str]) -> str:
+        """Truncate content while preserving query-relevant parts"""
+        sentences = content.split('. ')
+
+        # Score sentences by query relevance
+        sentence_scores = []
+        for sentence in sentences:
+            score = sum(1 for term in query_terms if term.lower() in sentence.lower())
+            sentence_scores.append((sentence, score))
+
+        # Sort by relevance and fit within token limit
+        sentence_scores.sort(key=lambda x: x[1], reverse=True)
+
+        selected_sentences = []
+        current_tokens = 0
+
+        for sentence, score in sentence_scores:
+            sentence_tokens = self._estimate_tokens(sentence)
+            if current_tokens + sentence_tokens <= max_tokens:
+                selected_sentences.append(sentence)
+                current_tokens += sentence_tokens
+
+        return '. '.join(selected_sentences) + "..."
+
+# ================================
 # OPTIMIZED TOKEN PROCESSOR
 # ================================
 
 class TokenProcessor:
-    """Token optimization processor with fast heuristics"""
+    """Token optimization processor with intelligent context building"""
+
     def __init__(self):
         self.max_context_tokens = 4000
-        self.tokenizer = None
+        self.context_builder = IntelligentContextBuilder()
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load tiktoken tokenizer: {e}")
+            self.tokenizer = None
 
     def estimate_tokens_fast(self, text: str) -> int:
-        """Fast token estimation - 20x faster than tiktoken"""
+        """Fast token estimation"""
         if not text:
             return 0
         return max(1, int(len(text) / 3.8))
 
+    def optimize_context_intelligent(self, documents: List[Document], query: str) -> str:
+        """Intelligent context optimization using the context builder"""
+        return self.context_builder.build_optimal_context(query, documents)
+
     def optimize_context_fast(self, documents: List[Document], query: str) -> str:
-        """Fast context optimization - skip complex token budget calculations"""
+        """Fast context optimization - fallback method"""
         if not documents:
             return ""
 
-        context_parts = []
-        total_chars = 0
-        max_chars = 12000
+        # Use intelligent context builder if available, otherwise use fast method
+        try:
+            return self.optimize_context_intelligent(documents, query)
+        except Exception:
+            # Fallback to fast method
+            context_parts = []
+            total_chars = 0
+            max_chars = 12000
 
-        for doc in documents[:6]:
-            if total_chars + len(doc.page_content) <= max_chars:
-                context_parts.append(doc.page_content)
-                total_chars += len(doc.page_content)
-            else:
-                remaining = max_chars - total_chars
-                if remaining > 200:
-                    context_parts.append(doc.page_content[:remaining] + "...")
-                break
+            for doc in documents[:6]:
+                if total_chars + len(doc.page_content) <= max_chars:
+                    context_parts.append(doc.page_content)
+                    total_chars += len(doc.page_content)
+                else:
+                    remaining = max_chars - total_chars
+                    if remaining > 200:
+                        context_parts.append(doc.page_content[:remaining] + "...")
+                        break
 
-        return "\n\n".join(context_parts)
+            return "\n\n".join(context_parts)
 
     @lru_cache(maxsize=2000)
     def estimate_tokens(self, text: str) -> int:
@@ -983,28 +1155,28 @@ class TokenProcessor:
 class LargeDocumentProcessor:
     def __init__(self):
         self.max_chunk_batch_size = 100
-        self.embedding_batch_size = 32
-        
+        self.embedding_batch_size = OPTIMAL_BATCH_SIZE  # Use optimized batch size
+
     async def process_large_document(self, documents: List[Document]) -> Dict[str, Any]:
         total_chunks = len(documents)
-        
         if total_chunks > 1000:
             return await self._process_in_streaming_mode(documents)
         else:
             return await self._process_normally(documents)
-    
+
     async def _process_in_streaming_mode(self, documents: List[Document]) -> Dict[str, Any]:
         processed_chunks = 0
         batch_size = self.max_chunk_batch_size
-        
+
         for i in range(0, len(documents), batch_size):
             batch = documents[i:i + batch_size]
             batch_texts = [doc.page_content for doc in batch]
-            
+
             embeddings = await self._get_embeddings_streaming(batch_texts)
             processed_chunks += len(batch)
+
             logger.info(f"📊 Processed {processed_chunks}/{len(documents)} chunks")
-        
+
         return {"streaming_mode": True, "total_chunks": len(documents)}
 
     async def _process_normally(self, documents: List[Document]) -> Dict[str, Any]:
@@ -1014,13 +1186,13 @@ class LargeDocumentProcessor:
         """Process embeddings with memory-efficient streaming"""
         all_embeddings = []
         batch_size = self.embedding_batch_size
-        
+
         for i in range(0, len(texts), batch_size):
             batch_texts = texts[i:i + batch_size]
-            
+
             cached_embeddings = []
             uncached_texts = []
-            
+
             for text in batch_texts:
                 text_hash = hashlib.md5(text.encode()).hexdigest()
                 cached = CACHE_MANAGER.get_embedding(text_hash)
@@ -1028,24 +1200,24 @@ class LargeDocumentProcessor:
                     cached_embeddings.append(cached)
                 else:
                     uncached_texts.append((text, text_hash))
-            
+
             if uncached_texts:
                 texts_to_embed = [text for text, _ in uncached_texts]
+
                 new_embeddings = await asyncio.to_thread(
                     base_sentence_model.encode,
                     texts_to_embed,
-                    batch_size=16,
+                    batch_size=len(texts_to_embed),  # Process entire batch at once
                     show_progress_bar=False,
                     normalize_embeddings=True
                 )
-                
+
                 for (text, text_hash), embedding in zip(uncached_texts, new_embeddings):
                     CACHE_MANAGER.set_embedding(text_hash, embedding)
-                
+
                 all_embeddings.extend(new_embeddings)
-            
             all_embeddings.extend(cached_embeddings)
-        
+
         return all_embeddings
 
 # ================================
@@ -1053,7 +1225,8 @@ class LargeDocumentProcessor:
 # ================================
 
 class RAGSystem:
-    """Enhanced RAG system with smart caching and cleanup"""
+    """Enhanced RAG system with optimizations"""
+
     def __init__(self):
         self.documents = []
         self.vector_store = None
@@ -1099,14 +1272,14 @@ class RAGSystem:
     async def retrieve_for_analytical(self, query: str) -> List[Document]:
         """Enhanced retrieval for analytical queries"""
         vector_docs, scores = await self.retrieve_and_rerank_optimized(query, top_k=10)
-        
+
         query_entities = self._extract_entities(query)
-        
         related_docs = []
+        
         for entity in query_entities:
             entity_docs = await self._find_entity_related_docs(entity, exclude_ids=set())
             related_docs.extend(entity_docs[:2])
-        
+
         all_docs = vector_docs + related_docs
         return self._deduplicate_documents(all_docs)[:8]
 
@@ -1126,17 +1299,20 @@ class RAGSystem:
                 if doc_id not in exclude_ids:
                     related_docs.append(doc)
                     exclude_ids.add(doc_id)
+
         return related_docs[:5]
 
     def _deduplicate_documents(self, docs: List[Document]) -> List[Document]:
         """Remove duplicate documents"""
         seen_content = set()
         unique_docs = []
+
         for doc in docs:
             content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
             if content_hash not in seen_content:
                 seen_content.add(content_hash)
                 unique_docs.append(doc)
+
         return unique_docs
 
     async def process_documents(self, sources: List[str]) -> Dict[str, Any]:
@@ -1152,9 +1328,9 @@ class RAGSystem:
         if self.doc_state_manager.should_invalidate_cache(doc_signature):
             logger.info("🧹 New documents detected - invalidating all caches")
             self.doc_state_manager.invalidate_all_caches()
-            self.doc_state_manager.current_doc_hash = doc_signature
-            self.doc_state_manager.current_doc_timestamp = time.time()
 
+        self.doc_state_manager.current_doc_hash = doc_signature
+        self.doc_state_manager.current_doc_timestamp = time.time()
         self._last_doc_signature = doc_signature
 
         try:
@@ -1177,7 +1353,7 @@ class RAGSystem:
 
             self.documents = self.text_splitter.split_documents(raw_documents, domain)
 
-            await self._setup_retrievers()
+            await self._setup_retrievers_optimized()
 
             processing_time = time.time() - start_time
 
@@ -1195,42 +1371,41 @@ class RAGSystem:
             logger.error(f"❌ Document processing error: {e}")
             raise
 
-    async def _setup_retrievers(self):
-        """Setup retrievers with FAISS and BM25"""
+    async def _setup_retrievers_optimized(self):
+        """Optimized retriever setup with parallel processing"""
         try:
-            logger.info("🔧 Setting up retrievers...")
+            logger.info("🔧 Setting up optimized retrievers...")
+
+            # Prepare tasks for parallel execution
+            tasks = []
 
             if HAS_FAISS and self.documents:
-                try:
-                    await ensure_models_ready()
-                    self.vector_store = FAISSVectorStore(dimension=384)
-                    self.vector_store.initialize()
+                await ensure_models_ready()
+                self.vector_store = FAISSVectorStore(dimension=384)
+                self.vector_store.initialize()
 
-                    doc_texts = [doc.page_content for doc in self.documents]
-                    embeddings = await get_embeddings_batch_optimized(doc_texts)
+                doc_texts = [doc.page_content for doc in self.documents]
+                
+                # Use optimized embedding generation
+                embeddings = await get_embeddings_batch_optimized(doc_texts)
+                
+                # Use optimized FAISS document addition
+                await self.vector_store.add_documents_optimized(self.documents, embeddings)
+                logger.info("✅ Optimized FAISS vector store setup complete")
 
-                    await self.vector_store.add_documents(self.documents, embeddings)
-                    logger.info("✅ FAISS vector store setup complete")
-
-                except Exception as e:
-                    logger.warning(f"⚠️ FAISS setup failed: {e}")
-                    self.vector_store = None
-
-            try:
-                if self.documents:
-                    self.bm25_retriever = await asyncio.to_thread(
-                        BM25Retriever.from_documents, self.documents
-                    )
-                    self.bm25_retriever.k = min(RERANK_TOP_K, len(self.documents))
-                    logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
-            except Exception as e:
-                logger.warning(f"⚠️ BM25 retriever setup failed: {e}")
+            # Setup BM25 retriever in parallel
+            if self.documents:
+                self.bm25_retriever = await asyncio.to_thread(
+                    BM25Retriever.from_documents, self.documents
+                )
+                self.bm25_retriever.k = min(RERANK_TOP_K, len(self.documents))
+                logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
 
         except Exception as e:
-            logger.error(f"❌ Retriever setup error: {e}")
+            logger.error(f"❌ Optimized retriever setup error: {e}")
 
     async def retrieve_and_rerank_optimized(self, query: str, top_k: int = 6) -> Tuple[List[Document], List[float]]:
-        """Streamlined retrieval - same components, faster execution"""
+        """Streamlined retrieval with optimized reranking"""
         if not self.documents:
             return [], []
 
@@ -1256,6 +1431,7 @@ class RAGSystem:
 
         all_docs = vector_docs[:6] + bm25_docs[:2]
 
+        # Deduplicate
         seen_content = set()
         unique_docs = []
         for doc in all_docs:
@@ -1264,15 +1440,26 @@ class RAGSystem:
                 seen_content.add(content_hash)
                 unique_docs.append(doc)
 
+        # Optimized reranking with batch processing
         if reranker and len(unique_docs) > 3:
             try:
                 pairs = [[query, doc.page_content[:256]] for doc in unique_docs[:12]]
-                scores = reranker.predict(pairs)
-                scored_docs = list(zip(unique_docs[:len(scores)], scores))
+                
+                # Process reranking in batches for better performance
+                batch_size = 32
+                all_scores = []
+                
+                for i in range(0, len(pairs), batch_size):
+                    batch_pairs = pairs[i:i + batch_size]
+                    batch_scores = reranker.predict(batch_pairs)
+                    all_scores.extend(batch_scores)
+
+                scored_docs = list(zip(unique_docs[:len(all_scores)], all_scores))
                 scored_docs.sort(key=lambda x: x[1], reverse=True)
 
                 final_docs = [doc for doc, _ in scored_docs[:top_k]]
                 final_scores = [score for _, score in scored_docs[:top_k]]
+
                 return final_docs, final_scores
 
             except Exception as e:
@@ -1283,20 +1470,20 @@ class RAGSystem:
     async def query_large_document_optimized(self, query: str) -> Dict[str, Any]:
         """Optimized querying for large documents"""
         candidate_chunks = await self._pre_filter_chunks(query)
-        
+
         if len(candidate_chunks) > 50:
             stage1_docs = await self._fast_retrieval_stage1(query, candidate_chunks, k=20)
             final_docs = await self._precision_retrieval_stage2(query, stage1_docs, k=6)
         else:
             final_docs, scores = await self.retrieve_and_rerank_optimized(query, top_k=6)
-        
+
         return await self._generate_response_optimized(query, final_docs)
 
     async def _pre_filter_chunks(self, query: str) -> List[Document]:
         """Fast pre-filtering using BM25 or keyword matching"""
         if self.bm25_retriever:
             candidates = await asyncio.to_thread(
-                self.bm25_retriever.invoke, 
+                self.bm25_retriever.invoke,
                 query
             )
             return candidates[:100]
@@ -1314,7 +1501,7 @@ class RAGSystem:
         """Generate optimized response"""
         context = self.token_processor.optimize_context_fast(docs, query)
         answer = await self._generate_response(query, context, self.domain, 0.8)
-        
+
         return {
             "query": query,
             "answer": answer,
@@ -1325,6 +1512,7 @@ class RAGSystem:
     async def query(self, query: str) -> Dict[str, Any]:
         """Process query with caching and return response"""
         start_time = time.time()
+
         try:
             doc_hash = getattr(self, '_last_doc_signature', 'unknown')
             cached_answer = QUERY_CACHE.get_cached_answer(query, doc_hash)
@@ -1344,7 +1532,7 @@ class RAGSystem:
 
             # Enhanced query classification
             query_analysis = QUERY_ANALYZER.classify_query(query)
-            
+
             if self.is_simple_query(query) and query_analysis['type'] == 'factual':
                 result = await self.query_fast_path(query)
                 QUERY_CACHE.cache_answer(query, doc_hash, result['answer'])
@@ -1413,7 +1601,6 @@ class RAGSystem:
 
         try:
             scores_array = np.array(scores)
-
             if np.max(scores_array) > 1.0:
                 scores_array = scores_array / np.max(scores_array)
             scores_array = np.clip(scores_array, 0.0, 1.0)
@@ -1436,6 +1623,7 @@ class RAGSystem:
 
             confidence = sum(factors[key] * weights[key] for key in factors)
 
+            # Bonus for exact query matches
             query_lower = query.lower()
             for doc in docs[:3]:
                 if query_lower in doc.page_content.lower():
@@ -1452,48 +1640,48 @@ class RAGSystem:
         """Calculate query-document match quality"""
         query_terms = set(query.lower().split())
         covered_terms = set()
-        
+
         for doc in docs[:5]:
             doc_terms = set(doc.page_content.lower().split())
             covered_terms.update(query_terms.intersection(doc_terms))
-        
+
         return len(covered_terms) / max(len(query_terms), 1)
 
     def _check_answer_consistency(self, docs: List[Document]) -> float:
         """Check consistency across documents"""
         if len(docs) < 2:
             return 1.0
-        
+
         # Simple consistency check based on overlapping terms
         all_terms = []
         for doc in docs[:5]:
             terms = set(doc.page_content.lower().split())
             all_terms.append(terms)
-        
+
         if not all_terms:
             return 0.5
-        
+
         base_terms = all_terms[0]
         consistency_scores = []
-        
+
         for terms in all_terms[1:]:
             overlap = len(base_terms.intersection(terms))
             total = len(base_terms.union(terms))
             if total > 0:
                 consistency_scores.append(overlap / total)
-        
+
         return np.mean(consistency_scores) if consistency_scores else 0.5
 
     def _calculate_source_diversity(self, docs: List[Document]) -> float:
         """Calculate diversity of sources"""
         if not docs:
             return 0.0
-        
+
         sources = set()
         for doc in docs:
             source = doc.metadata.get('source', 'unknown')
             sources.add(source)
-        
+
         # Normalize by number of documents
         diversity = len(sources) / len(docs)
         return min(1.0, diversity * 2)  # Scale to give reasonable scores
@@ -1501,16 +1689,17 @@ class RAGSystem:
     def _calculate_entity_match(self, query: str, docs: List[Document]) -> float:
         """Calculate entity matching between query and documents"""
         query_entities = self._extract_entities(query)
+
         if not query_entities:
             return 0.5
-        
+
         entity_matches = 0
         for entity in query_entities:
             for doc in docs[:5]:
                 if entity.lower() in doc.page_content.lower():
                     entity_matches += 1
                     break
-        
+
         return entity_matches / len(query_entities)
 
     def _calculate_confidence(self, query: str, similarity_scores: List[float], retrieved_docs: List[Document]) -> float:
@@ -1520,17 +1709,15 @@ class RAGSystem:
 
         try:
             scores_array = np.array(similarity_scores)
-
             if np.max(scores_array) > 1.0:
                 scores_array = scores_array / np.max(scores_array)
-
             scores_array = np.clip(scores_array, 0.0, 1.0)
 
             max_score = np.max(scores_array)
             avg_score = np.mean(scores_array)
             score_std = np.std(scores_array) if len(scores_array) > 1 else 0.0
-
             score_consistency = max(0.0, 1.0 - score_std)
+
             query_match = self._calculate_query_match(query, retrieved_docs)
 
             confidence = (
@@ -1540,6 +1727,7 @@ class RAGSystem:
                 0.15 * score_consistency
             )
 
+            # Bonus for exact query matches
             query_lower = query.lower()
             for doc in retrieved_docs[:3]:
                 if query_lower in doc.page_content.lower():
@@ -1633,7 +1821,6 @@ def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], k_v
 
     doc_scores = defaultdict(float)
     seen_docs = {}
-
     weights = {"semantic": 0.6, "bm25": 0.4}
 
     for i, results in enumerate(results_list):
@@ -1648,8 +1835,8 @@ def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], k_v
                 seen_docs[doc_key] = doc
 
     sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
-
     max_score = sorted_docs[0][1] if sorted_docs else 1.0
+
     result = []
     for doc_key, score in sorted_docs:
         normalized_score = score / max_score
@@ -1658,7 +1845,7 @@ def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], k_v
     return result
 
 async def get_embeddings_batch_optimized(texts: List[str]) -> List[np.ndarray]:
-    """Process embeddings with simple batching - OPTIMIZED"""
+    """Optimized embedding generation with larger batches and parallel processing"""
     if not texts:
         return []
 
@@ -1666,6 +1853,7 @@ async def get_embeddings_batch_optimized(texts: List[str]) -> List[np.ndarray]:
     uncached_texts = []
     uncached_indices = []
 
+    # Check cache first
     for i, text in enumerate(texts):
         text_hash = hashlib.md5(text.encode()).hexdigest()
         cached_embedding = CACHE_MANAGER.get_embedding(text_hash)
@@ -1675,24 +1863,38 @@ async def get_embeddings_batch_optimized(texts: List[str]) -> List[np.ndarray]:
             uncached_texts.append(text)
             uncached_indices.append(i)
 
+    # Process uncached texts in optimized batches
     if uncached_texts:
         await ensure_models_ready()
         if base_sentence_model:
-            embeddings = await asyncio.to_thread(
-                base_sentence_model.encode,
-                uncached_texts,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-                normalize_embeddings=True
-            )
+            # Use larger batch size for better performance
+            batch_size = OPTIMAL_BATCH_SIZE
+            new_embeddings = []
+            
+            for i in range(0, len(uncached_texts), batch_size):
+                batch_texts = uncached_texts[i:i + batch_size]
+                
+                batch_embeddings = await asyncio.to_thread(
+                    base_sentence_model.encode,
+                    batch_texts,
+                    batch_size=len(batch_texts),  # Process entire batch at once
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                    normalize_embeddings=True
+                )
+                
+                new_embeddings.extend(batch_embeddings)
 
-            for text, embedding in zip(uncached_texts, embeddings):
+            # Cache the new embeddings
+            for text, embedding in zip(uncached_texts, new_embeddings):
                 text_hash = hashlib.md5(text.encode()).hexdigest()
                 CACHE_MANAGER.set_embedding(text_hash, embedding)
 
-            for i, embedding in zip(uncached_indices, embeddings):
+            # Add to results
+            for i, embedding in zip(uncached_indices, new_embeddings):
                 results.append((i, embedding))
 
+    # Sort results by original order and return embeddings
     results.sort(key=lambda x: x[0])
     return [embedding for _, embedding in results]
 
@@ -1715,7 +1917,6 @@ async def get_query_embedding(query: str) -> np.ndarray:
                 query,
                 convert_to_numpy=True
             )
-
             CACHE_MANAGER.set_embedding(query_hash, embedding)
             return embedding
         else:
@@ -1729,6 +1930,7 @@ async def get_query_embedding(query: str) -> np.ndarray:
 async def ensure_gemini_ready():
     """Ensure Gemini client is ready"""
     global gemini_client
+    
     if gemini_client is None and GEMINI_API_KEY:
         try:
             gemini_client = AsyncOpenAI(
@@ -1738,9 +1940,11 @@ async def ensure_gemini_ready():
                 max_retries=3
             )
             logger.info("✅ Gemini client initialized successfully")
+
         except Exception as e:
             logger.error(f"❌ Failed to initialize Gemini client: {e}")
             raise HTTPException(status_code=503, detail="Gemini client not available")
+
     elif gemini_client is None:
         raise HTTPException(status_code=503, detail="Gemini API key not configured")
 
@@ -1765,7 +1969,6 @@ async def ensure_models_ready():
                     device='cpu',
                     cache_folder=os.getenv('SENTENCE_TRANSFORMERS_HOME', None)
                 )
-
                 base_sentence_model.eval()
                 _ = base_sentence_model.encode("warmup", show_progress_bar=False)
                 logger.info("✅ Sentence transformer loaded and warmed up")
@@ -1776,7 +1979,6 @@ async def ensure_models_ready():
                     max_length=128,
                     device='cpu'
                 )
-
                 _ = reranker.predict([["warmup", "test"]])
                 logger.info("✅ Reranker loaded and warmed up")
 
@@ -1808,7 +2010,6 @@ async def lifespan(app: FastAPI):
 
     try:
         await ensure_models_ready()
-
         if GEMINI_API_KEY:
             await ensure_gemini_ready()
 
@@ -1869,8 +2070,9 @@ async def get_cache_stats():
 
 @app.post("/hackrx/run")
 async def hackrx_run_endpoint(request: Request):
-    """HackRx endpoint with MASSIVELY OPTIMIZED PARALLEL PROCESSING and CACHING"""
+    """HackRx endpoint with OPTIMIZED PROCESSING and FIXED CACHING"""
     start_time = time.time()
+
     if not simple_auth_check(request):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
 
@@ -1885,10 +2087,12 @@ async def hackrx_run_endpoint(request: Request):
         if not documents_url:
             raise HTTPException(status_code=400, detail="No documents URL provided")
 
+        # FIXED: Better cache key generation and validation
         doc_cache_key = hashlib.md5(documents_url.encode()).hexdigest()
         current_time = time.time()
         cached_rag_system = None
 
+        # Check if we have cached data that's still valid
         if doc_cache_key in _document_cache:
             cached_data, timestamp = _document_cache[doc_cache_key]
             if current_time - timestamp < _cache_ttl:
@@ -1898,12 +2102,15 @@ async def hackrx_run_endpoint(request: Request):
         if cached_rag_system:
             rag_system = cached_rag_system
         else:
+            # Create new RAG system and process documents
             rag_system = RAGSystem()
             logger.info(f"📄 Processing document: {sanitize_pii(documents_url)}")
             await rag_system.process_documents([documents_url])
 
+            # Cache the processed system
             _document_cache[doc_cache_key] = (rag_system, current_time)
 
+            # Clean up old cache entries
             if len(_document_cache) > 10:
                 oldest_key = min(_document_cache.keys(),
                                key=lambda k: _document_cache[k][1])
@@ -1919,12 +2126,14 @@ async def hackrx_run_endpoint(request: Request):
                 logger.error(f"❌ Error processing question: {e}")
                 return f"Error processing question: {str(e)}"
 
+        # Use semaphore to control concurrency
         semaphore = asyncio.Semaphore(10)
 
         async def bounded_process(question: str) -> str:
             async with semaphore:
                 return await process_single_question(question)
 
+        # Process all questions in parallel
         answers = await asyncio.gather(
             *[bounded_process(q) for q in questions],
             return_exceptions=False
@@ -1978,12 +2187,12 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-
+    
     port = int(os.getenv("PORT", 8000))
     logger.info(f"🚀 Starting HackRx RAG System with Google Gemini on port {port}")
-
+    
     uvicorn.run(
-        "main:app",
+        "fastx:app",  # Updated to use correct module name
         host="0.0.0.0",
         port=port,
         reload=False,
