@@ -78,44 +78,53 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================================
-# OPTIMIZED CONFIGURATION
+# OPTIMIZED CONFIGURATION FOR CONSTITUTION ACCURACY
 # ================================
 
 # Fixed optimal configuration
 HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
-# CHANGED: Use Gemini API key instead of OpenAI
 GEMINI_API_KEY = 'AIzaSyA_fMjDSV25ADwsJ4YMnky4BQyVpuIIhT8'
 
-# SPEED-OPTIMIZED CONFIGURATION
+# ACCURACY-OPTIMIZED CONFIGURATION FOR CONSTITUTION
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-CHUNK_SIZE = 600 # From 800 - reduces processing time
-CHUNK_OVERLAP = 75 # From 100 - maintains quality
-SEMANTIC_SEARCH_K = 8 # From 12 - still gets best results
-CONTEXT_DOCS = 6 # From 8 - optimal quality/speed balance
-CONFIDENCE_THRESHOLD = 0.15
-RERANK_TOP_K = 12 # From 20 - reranker gets top candidates
-MAX_FILE_SIZE_MB = 50
-QUESTION_TIMEOUT = 8.0 # From 15.0 - faster timeout
 
-# PARALLEL PROCESSING - OPTIMIZED
-OPTIMAL_BATCH_SIZE = 32 # From 16 - better batching
-MAX_PARALLEL_BATCHES = 4 # From 2 - more parallelism (for embeddings only)
-EMBEDDING_TIMEOUT = 60.0
+# INCREASED FOR CONSTITUTION ACCURACY
+CHUNK_SIZE = 1200  # From 600 - captures entire Articles
+CHUNK_OVERLAP = 200  # From 75 - preserves context across chunks
+SEMANTIC_SEARCH_K = 12  # From 8 - more candidates for reranking
+CONTEXT_DOCS = 18  # From 6 - critical for Constitution Articles
+CONFIDENCE_THRESHOLD = 0.12  # Slightly lower for Constitution edge cases
+RERANK_TOP_K = 20  # From 12 - more candidates for reranking
+
+MAX_FILE_SIZE_MB = 50
+QUESTION_TIMEOUT = 12.0  # From 8.0 - allow more time for complex Constitution queries
+
+# PARALLEL PROCESSING - OPTIMIZED FOR ACCURACY
+OPTIMAL_BATCH_SIZE = 16  # Balanced for accuracy
+MAX_PARALLEL_BATCHES = 4
+EMBEDDING_TIMEOUT = 90.0  # Increased for larger chunks
 
 # Supported file types
 SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.txt', '.md', '.csv']
 SUPPORTED_URL_SCHEMES = ['http', 'https', 'blob', 'drive', 'dropbox']
 
-# Domain detection keywords
+# Domain detection keywords - Enhanced for Constitution
 DOMAIN_KEYWORDS = {
+    "legal": [
+        'article', 'constitution', 'fundamental rights', 'directive principles', 'amendment',
+        'supreme court', 'high court', 'parliament', 'legislature', 'judicial review',
+        'contract', 'agreement', 'clause', 'statute', 'regulation', 'compliance', 'litigation',
+        'jurisdiction', 'liability', 'court', 'legal', 'law', 'attorney', 'counsel'
+    ],
+    "constitutional": [  # New domain for Constitution
+        'fundamental rights', 'directive principles', 'emergency provisions', 'amendment',
+        'article', 'part', 'schedule', 'constitution', 'constitutional', 'parliament',
+        'supreme court', 'president', 'governor', 'union', 'state', 'citizenship'
+    ],
     "insurance": [
         'policy', 'premium', 'claim', 'coverage', 'benefit', 'exclusion', 'deductible',
         'co-payment', 'policyholder', 'insured', 'underwriting', 'actuary', 'risk assessment'
-    ],
-    "legal": [
-        'contract', 'agreement', 'clause', 'statute', 'regulation', 'compliance', 'litigation',
-        'jurisdiction', 'liability', 'court', 'legal', 'law', 'attorney', 'counsel'
     ],
     "medical": [
         'patient', 'diagnosis', 'treatment', 'clinical', 'medical', 'healthcare', 'physician',
@@ -146,12 +155,11 @@ _startup_complete = False
 
 # Cache for document processing
 _document_cache = {}
-_cache_ttl = 1800 # 30 minutes
+_cache_ttl = 1800  # 30 minutes
 
 # Global models
 base_sentence_model = None
 reranker = None
-# CHANGED: Renamed from openai_client to gemini_client for clarity
 gemini_client = None
 
 # ================================
@@ -181,7 +189,7 @@ class SmartCacheManager:
         # Track current document session
         self.current_document_hash = None
         self._lock = threading.RLock()
-    
+
     def set_current_document(self, document_hash: str):
         """Set current document and clear caches if document changed"""
         with self._lock:
@@ -191,55 +199,54 @@ class SmartCacheManager:
                     self.clear_all_caches()
                 else:
                     logger.info(f"📄 Setting initial document: {document_hash[:8]}")
-                
                 self.current_document_hash = document_hash
                 logger.info("🧹 Caches cleared for new document")
-    
+
     def clear_all_caches(self):
         """Clear ALL caches when new document is uploaded"""
         with self._lock:
             self.embedding_cache.clear()
-            self.document_chunk_cache.clear() 
+            self.document_chunk_cache.clear()
             self.domain_cache.clear()
             logger.info("🧹 All caches cleared")
-    
+
     def force_clear_all(self):
         """Force clear all caches and reset document tracking"""
         with self._lock:
             self.clear_all_caches()
             self.current_document_hash = None
             logger.info("🧹 Force cleared all caches and reset document tracking")
-    
+
     def get_embedding(self, text_hash: str) -> Optional[Any]:
         """Thread-safe embedding cache get"""
         with self._lock:
             return self.embedding_cache.get(text_hash)
-    
+
     def set_embedding(self, text_hash: str, embedding: Any):
         """Thread-safe embedding cache set"""
         with self._lock:
             self.embedding_cache[text_hash] = embedding
-    
+
     def get_document_chunks(self, cache_key: str) -> Optional[Any]:
         """Thread-safe document chunk cache get"""
         with self._lock:
             return self.document_chunk_cache.get(cache_key)
-    
+
     def set_document_chunks(self, cache_key: str, chunks: Any):
         """Thread-safe document chunk cache set"""
         with self._lock:
             self.document_chunk_cache[cache_key] = chunks
-    
+
     def get_domain_result(self, cache_key: str) -> Optional[Any]:
         """Thread-safe domain cache get"""
         with self._lock:
             return self.domain_cache.get(cache_key)
-    
+
     def set_domain_result(self, cache_key: str, result: Any):
         """Thread-safe domain cache set"""
         with self._lock:
             self.domain_cache[cache_key] = result
-    
+
     def cleanup_if_needed(self):
         """Cleanup for dict fallback"""
         if not self.primary_available:
@@ -258,7 +265,7 @@ class SmartCacheManager:
                     items = list(self.domain_cache.items())[-500:]
                     self.domain_cache.clear()
                     self.domain_cache.update(items)
-    
+
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache statistics with document tracking"""
         with self._lock:
@@ -280,17 +287,16 @@ class QueryResultCache:
         self.max_size = 1000
         self.current_document_hash = None
         self._lock = threading.RLock()
-    
+
     def set_current_document(self, document_hash: str):
         """Set current document and clear cache if document changed"""
         with self._lock:
             if self.current_document_hash != document_hash:
                 if self.current_document_hash is not None:
                     logger.info(f"🔄 Query cache: Document changed, clearing cache")
-                    self.cache.clear()
-                
+                self.cache.clear()
                 self.current_document_hash = document_hash
-    
+
     def get_cached_answer(self, query: str, doc_hash: str) -> Optional[str]:
         with self._lock:
             # Only return cached answer if it's for the current document
@@ -298,20 +304,18 @@ class QueryResultCache:
                 cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{doc_hash[:8]}"
                 return self.cache.get(cache_key)
             return None
-    
+
     def cache_answer(self, query: str, doc_hash: str, answer: str):
         with self._lock:
             if self.current_document_hash == doc_hash:
                 cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{doc_hash[:8]}"
-                
                 if len(self.cache) >= self.max_size:
                     # Remove oldest 20%
                     old_keys = list(self.cache.keys())[:200]
                     for key in old_keys:
                         del self.cache[key]
-                
                 self.cache[cache_key] = answer
-    
+
     def clear_cache(self):
         """Clear all cached queries"""
         with self._lock:
@@ -339,9 +343,9 @@ def simple_auth_check(request: Request) -> bool:
 def sanitize_pii(text: str) -> str:
     """Remove PII patterns from text"""
     patterns = [
-        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', # emails
-        r'\b\d{3}-\d{3}-\d{4}\b', # phone numbers
-        r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b' # credit cards
+        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # emails
+        r'\b\d{3}-\d{3}-\d{4}\b',  # phone numbers
+        r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b'  # credit cards
     ]
     
     sanitized = text
@@ -379,7 +383,7 @@ def sanitize_for_json(data):
         return [sanitize_for_json(v) for v in data]
     elif isinstance(data, (np.integer, np.floating, np.bool_)):
         return convert_numpy_types(data)
-    elif hasattr(data, 'item'): # numpy scalar
+    elif hasattr(data, 'item'):  # numpy scalar
         return data.item()
     elif isinstance(data, (np.ndarray,)):
         return data.tolist()
@@ -402,7 +406,7 @@ class UnifiedLoader:
             r'dropbox\.com/s/([a-zA-Z0-9]+)',
             r'dropbox\.com/sh/([a-zA-Z0-9]+)'
         ]
-    
+
     async def load_document(self, source: str) -> List[Document]:
         """Universal document loader"""
         try:
@@ -421,14 +425,15 @@ class UnifiedLoader:
             
             logger.info(f"✅ Loaded {len(docs)} documents from {sanitize_pii(source)}")
             return docs
+            
         except Exception as e:
             logger.error(f"❌ Failed to load {sanitize_pii(source)}: {e}")
             raise
-    
+
     def _is_url(self, source: str) -> bool:
         """Check if source is a URL"""
         return source.startswith(('http://', 'https://', 'blob:', 'drive:', 'dropbox:'))
-    
+
     async def _load_from_url(self, url: str) -> List[Document]:
         """Load document from URL"""
         parsed = urlparse(url)
@@ -469,10 +474,9 @@ class UnifiedLoader:
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
-    
+
     def _transform_special_url(self, url: str) -> str:
         """Transform special URLs to direct download links - ENHANCED"""
-        
         # Enhanced Google Drive transformation - handle multiple formats
         google_drive_patterns = [
             r'drive\.google\.com/file/d/([a-zA-Z0-9-_]+)',
@@ -513,7 +517,7 @@ class UnifiedLoader:
                 return url.replace('dropbox.com', 'dl.dropboxusercontent.com')
         
         return url
-    
+
     def _get_extension_from_url(self, url: str) -> Optional[str]:
         """Get file extension from URL"""
         parsed = urlparse(url)
@@ -521,7 +525,7 @@ class UnifiedLoader:
         if path:
             return os.path.splitext(path)[1]
         return None
-    
+
     def _detect_extension_from_content(self, content: bytes) -> str:
         """Detect file extension from content"""
         if self.mime_detector:
@@ -541,10 +545,10 @@ class UnifiedLoader:
         # Basic content-based detection
         if content.startswith(b'%PDF'):
             return '.pdf'
-        elif b'PK' in content[:10]: # ZIP-based formats
+        elif b'PK' in content[:10]:  # ZIP-based formats
             return '.docx'
         return '.txt'
-    
+
     async def _load_from_file(self, file_path: str) -> List[Document]:
         """Load document from file"""
         file_extension = os.path.splitext(file_path)[1].lower()
@@ -630,20 +634,21 @@ class UnifiedLoader:
         return docs
 
 # ================================
-# ADAPTIVE TEXT SPLITTER - WITH SMART CACHING
+# ADAPTIVE TEXT SPLITTER - WITH SMART CACHING AND CONSTITUTION OPTIMIZATION
 # ================================
 
 class AdaptiveTextSplitter:
-    """Adaptive text splitter with smart caching"""
+    """Adaptive text splitter with smart caching and Constitution optimization"""
     
     def __init__(self):
         self.separators = [
             "\n\n## ", "\n\n# ", "\n\n### ", "\n\n#### ",
+            "\n\nArticle ", "\n\nPart ",  # Added Constitution-specific separators
             "\n\n", "\n", ". ", "! ", "? ", "; ", " ", ""
         ]
-    
+
     def split_documents(self, documents: List[Document], detected_domain: str = "general") -> List[Document]:
-        """Split documents with smart caching"""
+        """Split documents with smart caching and Constitution optimization"""
         if not documents:
             return []
         
@@ -670,25 +675,27 @@ class AdaptiveTextSplitter:
                 chunks = self._simple_split(doc, chunk_size, chunk_overlap)
                 all_chunks.extend(chunks)
         
-        # Filter very short chunks
-        all_chunks = [chunk for chunk in all_chunks if len(chunk.page_content.strip()) >= 50]
+        # Filter very short chunks (but be more lenient for Constitution)
+        min_chunk_size = 30 if detected_domain in ["legal", "constitutional"] else 50
+        all_chunks = [chunk for chunk in all_chunks if len(chunk.page_content.strip()) >= min_chunk_size]
         
         # Cache the result using cache manager
         CACHE_MANAGER.set_document_chunks(cache_key, all_chunks)
         
-        logger.info(f"📄 Created {len(all_chunks)} adaptive chunks")
+        logger.info(f"📄 Created {len(all_chunks)} adaptive chunks for {detected_domain} domain")
         return all_chunks
-    
+
     def _calculate_content_hash(self, documents: List[Document]) -> str:
         """Calculate hash for content caching"""
         content_sample = "".join([doc.page_content[:100] for doc in documents[:5]])
         return hashlib.sha256(content_sample.encode()).hexdigest()[:16]
-    
+
     def _adapt_for_content(self, documents: List[Document], detected_domain: str) -> Tuple[int, int]:
-        """Adapt chunk size based on content and domain"""
-        # Domain-specific adjustments
+        """Adapt chunk size based on content and domain - OPTIMIZED FOR CONSTITUTION"""
+        # Domain-specific adjustments - Enhanced for Constitution
         domain_multipliers = {
-            "legal": 1.25,
+            "legal": 1.3,  # Increased for legal documents
+            "constitutional": 1.4,  # New domain for Constitution
             "medical": 1.0,
             "insurance": 0.85,
             "financial": 1.0,
@@ -702,16 +709,28 @@ class AdaptiveTextSplitter:
         adapted_size = int(CHUNK_SIZE * multiplier)
         adapted_overlap = min(adapted_size // 4, int(CHUNK_OVERLAP * 1.2))
         
-        # Ensure reasonable bounds
-        adapted_size = max(600, min(2000, adapted_size))
+        # Ensure reasonable bounds - Higher for Constitution accuracy
+        adapted_size = max(800, min(2500, adapted_size))
+        
+        logger.info(f"📏 Adapted chunk size: {adapted_size} (overlap: {adapted_overlap}) for domain: {detected_domain}")
         return adapted_size, adapted_overlap
-    
+
     def _split_document(self, document: Document, chunk_size: int, chunk_overlap: int) -> List[Document]:
-        """Split single document"""
+        """Split single document with Constitution-aware separators"""
+        # Use Constitution-aware separators if it's legal content
+        separators = self.separators
+        if any(term in document.page_content.lower() for term in ['article', 'constitution', 'fundamental rights']):
+            # Prioritize Constitution-specific separators
+            separators = [
+                "\n\nArticle ", "\n\nPart ", "\n\nSchedule ", "\n\nChapter ",
+                "\n\n## ", "\n\n# ", "\n\n### ", "\n\n#### ",
+                "\n\n", "\n", ". ", "! ", "? ", "; ", " ", ""
+            ]
+        
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
-            separators=self.separators
+            separators=separators
         )
         
         chunks = splitter.split_documents([document])
@@ -724,7 +743,7 @@ class AdaptiveTextSplitter:
             })
         
         return chunks
-    
+
     def _simple_split(self, document: Document, chunk_size: int, chunk_overlap: int) -> List[Document]:
         """Simple fallback splitting"""
         try:
@@ -749,7 +768,7 @@ class FAISSVectorStore:
         self.index = None
         self.documents = []
         self.is_trained = False
-    
+
     def initialize(self):
         """Initialize FAISS index"""
         if not HAS_FAISS:
@@ -762,7 +781,7 @@ class FAISSVectorStore:
         except Exception as e:
             logger.error(f"❌ Failed to initialize FAISS: {e}")
             raise
-    
+
     async def add_documents(self, documents: List[Document], embeddings: List[np.ndarray]):
         """Add documents with optimized batch processing"""
         try:
@@ -773,7 +792,7 @@ class FAISSVectorStore:
                 raise ValueError("Number of documents must match number of embeddings")
             
             # Convert embeddings in chunks to avoid memory spikes
-            chunk_size = 256 # Process 256 embeddings at a time
+            chunk_size = 256  # Process 256 embeddings at a time
             for i in range(0, len(embeddings), chunk_size):
                 end_idx = min(i + chunk_size, len(embeddings))
                 chunk_embeddings = np.array(embeddings[i:end_idx], dtype=np.float32)
@@ -794,7 +813,7 @@ class FAISSVectorStore:
         except Exception as e:
             logger.error(f"❌ Error adding documents to FAISS: {e}")
             raise
-    
+
     async def similarity_search_with_score(self, query_embedding: np.ndarray, k: int = 10) -> List[Tuple[Document, float]]:
         """Search for similar documents with scores"""
         try:
@@ -824,7 +843,7 @@ class FAISSVectorStore:
         except Exception as e:
             logger.error(f"❌ Error in FAISS similarity search: {e}")
             return []
-    
+
     def clear(self):
         """Clear the vector store"""
         self.documents.clear()
@@ -832,18 +851,18 @@ class FAISSVectorStore:
             self.index.reset()
 
 # ================================
-# DOMAIN DETECTOR - WITH SMART CACHING
+# DOMAIN DETECTOR - WITH SMART CACHING AND CONSTITUTION SUPPORT
 # ================================
 
 class DomainDetector:
-    """Universal domain detector with smart caching"""
+    """Universal domain detector with smart caching and Constitution support"""
     
     def detect_domain(self, documents: List[Document], confidence_threshold: float = 0.3) -> Tuple[str, float]:
-        """Universal domain detection with smart caching"""
+        """Universal domain detection with smart caching and Constitution support"""
         if not documents:
             return "general", 0.5
         
-        combined_text = ' '.join([doc.page_content[:200] for doc in documents[:5]]).lower()
+        combined_text = ' '.join([doc.page_content[:300] for doc in documents[:5]]).lower()  # Increased sample size
         cache_key = hashlib.md5(combined_text.encode()).hexdigest()[:16]
         
         cached_result = CACHE_MANAGER.get_domain_result(cache_key)
@@ -859,6 +878,11 @@ class DomainDetector:
                 best_domain = max(domain_scores, key=domain_scores.get)
                 best_score = domain_scores[best_domain]
                 
+                # Special handling for Constitution detection
+                if self._is_constitution_document(combined_text):
+                    best_domain = "constitutional"
+                    best_score = 0.9
+                    
                 if best_score < confidence_threshold:
                     best_domain = "general"
                     best_score = confidence_threshold
@@ -868,13 +892,31 @@ class DomainDetector:
                 
                 logger.info(f"🔍 Domain detected: {best_domain} (confidence: {best_score:.2f})")
                 return result
-            
+                
             return "general", confidence_threshold
             
         except Exception as e:
             logger.warning(f"⚠️ Domain detection error: {e}")
             return "general", confidence_threshold
-    
+
+    def _is_constitution_document(self, text: str) -> bool:
+        """Detect if this is a Constitution document"""
+        constitution_indicators = [
+            'constitution of india',
+            'fundamental rights',
+            'directive principles',
+            'part i', 'part ii', 'part iii',
+            'article 1', 'article 2', 'article 3',
+            'union and its territory',
+            'citizenship',
+            'right to equality',
+            'right to freedom',
+            'right against exploitation'
+        ]
+        
+        matches = sum(1 for indicator in constitution_indicators if indicator in text)
+        return matches >= 3  # Need at least 3 matches to confirm
+
     def _keyword_based_detection(self, combined_text: str) -> Dict[str, float]:
         """Keyword-based domain detection"""
         domain_scores = {}
@@ -892,67 +934,142 @@ class DomainDetector:
         return domain_scores
 
 # ================================
-# OPTIMIZED TOKEN PROCESSOR
+# ENHANCED TOKEN PROCESSOR FOR CONSTITUTION ACCURACY
 # ================================
 
 class TokenProcessor:
-    """Token optimization processor with fast heuristics"""
+    """Token optimization processor with Constitution-aware context optimization"""
     
     def __init__(self):
-        self.max_context_tokens = 4000
+        self.max_context_tokens = 6000  # Increased for Constitution accuracy
         self.tokenizer = None
         
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load tiktoken tokenizer: {e}")
-    
+
     def estimate_tokens_fast(self, text: str) -> int:
         """Fast token estimation - 20x faster than tiktoken"""
         if not text:
             return 0
         # Simple heuristic that's nearly as accurate
-        return max(1, int(len(text) / 3.8)) # Average chars per token
-    
-    def optimize_context_fast(self, documents: List[Document], query: str) -> str:
-        """Fast context optimization - skip complex token budget calculations"""
+        return max(1, int(len(text) / 3.8))  # Average chars per token
+
+    def optimize_context_smart(self, documents: List[Document], query: str) -> str:
+        """Smart context optimization that preserves relevant chunks"""
         if not documents:
             return ""
         
-        # Simple but effective: take top 6 documents, truncate if too long
+        # Extract query terms for relevance scoring
+        query_terms = set(query.lower().split())
+        
+        # Score documents by relevance to query
+        scored_docs = []
+        for doc in documents:
+            content_lower = doc.page_content.lower()
+            
+            # Calculate relevance score
+            term_matches = sum(1 for term in query_terms if term in content_lower)
+            phrase_bonus = 2 if query.lower() in content_lower else 0
+            article_bonus = 1 if 'article' in content_lower and any(term in content_lower for term in query_terms) else 0
+            
+            relevance_score = term_matches + phrase_bonus + article_bonus
+            scored_docs.append((doc, relevance_score))
+        
+        # Sort by relevance
+        scored_docs.sort(key=lambda x: x[1], reverse=True)
+        
+        # Build context within token limit
         context_parts = []
         total_chars = 0
-        max_chars = 12000 # ~3000 tokens
+        max_chars = 18000  # ~4500 tokens for Constitution accuracy
         
-        for doc in documents[:6]:
-            if total_chars + len(doc.page_content) <= max_chars:
-                context_parts.append(doc.page_content)
-                total_chars += len(doc.page_content)
+        for doc, score in scored_docs:
+            doc_content = doc.page_content
+            
+            if total_chars + len(doc_content) <= max_chars:
+                context_parts.append(doc_content)
+                total_chars += len(doc_content)
             else:
-                # Add truncated version
+                # Add truncated version if there's room
                 remaining = max_chars - total_chars
-                if remaining > 200:
-                    context_parts.append(doc.page_content[:remaining] + "...")
+                if remaining > 300:  # Minimum meaningful chunk
+                    context_parts.append(doc_content[:remaining] + "...")
                 break
         
-        return "\n\n".join(context_parts)
-    
+        context = "\n\n".join(context_parts)
+        logger.info(f"📝 Optimized context: {len(context_parts)} chunks, {len(context)} chars")
+        return context
+
     # Keep original methods for backward compatibility
     @lru_cache(maxsize=2000)
     def estimate_tokens(self, text: str) -> int:
         """Accurate token estimation with fallback"""
         return self.estimate_tokens_fast(text)
-    
+
     def optimize_context(self, documents: List[Document], query: str, max_tokens: int = None) -> str:
         """Optimize context for token limit"""
-        return self.optimize_context_fast(documents, query)
+        return self.optimize_context_smart(documents, query)
 
 # ================================
-# RAG SYSTEM - ENHANCED
+# RECIPROCAL RANK FUSION - ENHANCED FOR CONSTITUTION
+# ================================
+
+def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], 
+                          k_value: int = 60, weights: Dict[str, float] = None) -> List[Tuple[Document, float]]:
+    """Enhanced Reciprocal Rank Fusion for combining multiple result sets"""
+    if not results_list:
+        return []
+    
+    # Default weights optimized for Constitution accuracy
+    if weights is None:
+        weights = {"semantic": 0.6, "bm25": 0.4}
+    
+    # Document scores accumulator
+    doc_scores = defaultdict(float)
+    seen_docs = {}
+    
+    # Process each result set
+    for i, results in enumerate(results_list):
+        weight_key = "semantic" if i == 0 else "bm25"
+        weight = weights.get(weight_key, 1.0 / len(results_list))
+        
+        # Apply RRF scoring
+        for rank, (doc, score) in enumerate(results):
+            doc_key = hashlib.md5(doc.page_content.encode()).hexdigest()
+            rrf_score = weight / (k_value + rank + 1)
+            
+            # Boost for Constitution-specific content
+            if any(term in doc.page_content.lower() for term in ['article', 'fundamental rights', 'constitution']):
+                rrf_score *= 1.2
+            
+            doc_scores[doc_key] += rrf_score
+            
+            if doc_key not in seen_docs:
+                seen_docs[doc_key] = doc
+    
+    # Sort by combined scores
+    sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+    
+    # Return documents with normalized scores
+    if not sorted_docs:
+        return []
+    
+    max_score = sorted_docs[0][1]
+    result = []
+    for doc_key, score in sorted_docs:
+        normalized_score = score / max_score
+        result.append((seen_docs[doc_key], normalized_score))
+    
+    return result
+
+# ================================
+# RAG SYSTEM - ENHANCED FOR CONSTITUTION ACCURACY
 # ================================
 
 class RAGSystem:
-    """Enhanced RAG system with smart caching and cleanup"""
+    """Enhanced RAG system with Constitution accuracy optimizations"""
     
     def __init__(self):
         self.documents = []
@@ -962,25 +1079,30 @@ class RAGSystem:
         self.loader = UnifiedLoader()
         self.text_splitter = AdaptiveTextSplitter()
         self.token_processor = TokenProcessor()
-    
+
     async def cleanup(self):
         """RAGSystem cleanup method"""
         self.documents.clear()
         if self.vector_store:
             self.vector_store.clear()
         logger.info("🧹 RAGSystem cleaned up")
-    
+
     def is_simple_query(self, query: str) -> bool:
-        """Detect simple queries that can use fast path"""
+        """Detect simple queries - more conservative for Constitution"""
         simple_indicators = [
-            len(query.split()) <= 8,
-            not any(word in query.lower() for word in ['compare', 'analyze', 'explain why', 'how does', 'what are the differences']),
+            len(query.split()) <= 6,  # Reduced threshold for Constitution
+            not any(word in query.lower() for word in ['compare', 'analyze', 'explain why', 'how does', 'what are the differences', 'article']),
             query.count('?') <= 1
         ]
+        
+        # Never use fast path for Constitution queries
+        if any(term in query.lower() for term in ['article', 'fundamental rights', 'constitution', 'part', 'schedule']):
+            return False
+        
         return all(simple_indicators)
-    
+
     async def query_fast_path(self, query: str) -> Dict[str, Any]:
-        """Fast path for simple queries"""
+        """Fast path for simple queries - disabled for Constitution"""
         # Skip complex retrieval, use top 3 documents only
         retrieved_docs = self.documents[:3]
         context = "\n\n".join([doc.page_content[:800] for doc in retrieved_docs])
@@ -996,7 +1118,7 @@ class RAGSystem:
             "fast_path": True,
             "processing_time": 0.5
         }
-    
+
     async def process_documents(self, sources: List[str]) -> Dict[str, Any]:
         """Process documents with enhanced caching management"""
         start_time = time.time()
@@ -1015,6 +1137,7 @@ class RAGSystem:
         
         # Update document signature
         self._last_doc_signature = doc_signature
+        
         logger.info(f"📄 Processing new documents with signature: {doc_signature[:8]}")
         
         try:
@@ -1059,7 +1182,7 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"❌ Document processing error: {e}")
             raise
-    
+
     async def _setup_retrievers(self):
         """Setup retrievers with FAISS and BM25"""
         try:
@@ -1072,7 +1195,7 @@ class RAGSystem:
                     self.vector_store = FAISSVectorStore(dimension=384)
                     self.vector_store.initialize()
                     
-                    # Get embeddings
+                    # Get embeddings in optimized batches
                     doc_texts = [doc.page_content for doc in self.documents]
                     embeddings = await get_embeddings_batch_optimized(doc_texts)
                     
@@ -1097,37 +1220,47 @@ class RAGSystem:
                 
         except Exception as e:
             logger.error(f"❌ Retriever setup error: {e}")
-    
-    async def retrieve_and_rerank_optimized(self, query: str, top_k: int = 6) -> Tuple[List[Document], List[float]]:
-        """Streamlined retrieval - same components, faster execution"""
+
+    async def retrieve_and_rerank_with_fusion(self, query: str, top_k: int = 18) -> Tuple[List[Document], List[float]]:
+        """Enhanced retrieval with RRF and reranking for Constitution accuracy"""
         if not self.documents:
             return [], []
         
         # Get query embedding (cached)
         query_embedding = await get_query_embedding(query)
         
-        # Vector search (primary method)
-        vector_docs = []
+        # Vector search (primary method) - Get more candidates
+        vector_results = []
         if self.vector_store:
             try:
-                vector_results = await self.vector_store.similarity_search_with_score(
-                    query_embedding, k=8
+                vector_search_results = await self.vector_store.similarity_search_with_score(
+                    query_embedding, k=SEMANTIC_SEARCH_K
                 )
-                vector_docs = [doc for doc, score in vector_results]
+                vector_results = vector_search_results
             except Exception as e:
                 logger.warning(f"⚠️ Vector search failed: {e}")
         
-        # BM25 search (secondary method)
-        bm25_docs = []
-        if self.bm25_retriever and len(vector_docs) < 8:
+        # BM25 search (secondary method) - Get more candidates
+        bm25_results = []
+        if self.bm25_retriever:
             try:
-                bm25_results = await asyncio.to_thread(self.bm25_retriever.invoke, query) or []
-                bm25_docs = bm25_results[:4] # Take top 4 from BM25
+                bm25_docs = await asyncio.to_thread(self.bm25_retriever.invoke, query) or []
+                # Convert to scored results (BM25 doesn't provide scores, so use position-based)
+                bm25_results = [(doc, 1.0 - (i * 0.1)) for i, doc in enumerate(bm25_docs[:8])]
             except Exception as e:
                 logger.warning(f"⚠️ BM25 search failed: {e}")
         
-        # Combine results (simple fusion)
-        all_docs = vector_docs[:6] + bm25_docs[:2] # 6 vector + 2 BM25
+        # Apply Reciprocal Rank Fusion
+        if vector_results and bm25_results:
+            logger.info(f"🔀 Applying RRF: {len(vector_results)} vector + {len(bm25_results)} BM25 results")
+            fused_results = reciprocal_rank_fusion([vector_results, bm25_results])
+            all_docs = [doc for doc, score in fused_results]
+        elif vector_results:
+            all_docs = [doc for doc, score in vector_results]
+        elif bm25_results:
+            all_docs = [doc for doc, score in bm25_results]
+        else:
+            return [], []
         
         # Remove duplicates
         seen_content = set()
@@ -1138,25 +1271,30 @@ class RAGSystem:
                 seen_content.add(content_hash)
                 unique_docs.append(doc)
         
-        # Rerank top candidates (critical for accuracy)
+        # Rerank top candidates using cross-encoder (critical for accuracy)
         if reranker and len(unique_docs) > 3:
             try:
-                pairs = [[query, doc.page_content[:256]] for doc in unique_docs[:12]]
+                # Use more context for Constitution reranking
+                context_length = 512 if self.domain in ["legal", "constitutional"] else 256
+                pairs = [[query, doc.page_content[:context_length]] for doc in unique_docs[:RERANK_TOP_K]]
+                
                 scores = reranker.predict(pairs)
                 scored_docs = list(zip(unique_docs[:len(scores)], scores))
                 scored_docs.sort(key=lambda x: x[1], reverse=True)
                 
                 final_docs = [doc for doc, _ in scored_docs[:top_k]]
-                final_scores = [score for _, score in scored_docs[:top_k]]
+                final_scores = [float(score) for _, score in scored_docs[:top_k]]
                 
+                logger.info(f"🎯 Reranked to top {len(final_docs)} documents")
                 return final_docs, final_scores
+                
             except Exception as e:
                 logger.warning(f"⚠️ Reranking failed: {e}")
         
         return unique_docs[:top_k], [0.8] * min(len(unique_docs), top_k)
-    
+
     async def query(self, query: str) -> Dict[str, Any]:
-        """Process query with caching and return response"""
+        """Process query with enhanced Constitution accuracy"""
         start_time = time.time()
         
         try:
@@ -1177,15 +1315,15 @@ class RAGSystem:
             # Simple cache cleanup for non-TTL caches
             CACHE_MANAGER.cleanup_if_needed()
             
-            # Fast path for simple queries
-            if self.is_simple_query(query):
+            # Fast path for simple queries (disabled for Constitution)
+            if self.is_simple_query(query) and self.domain not in ["legal", "constitutional"]:
                 result = await self.query_fast_path(query)
                 # Cache the result
                 QUERY_CACHE.cache_answer(query, doc_hash, result['answer'])
                 return result
             
-            # Retrieve documents
-            retrieved_docs, similarity_scores = await self.retrieve_and_rerank_optimized(query, CONTEXT_DOCS)
+            # Enhanced retrieval with fusion and reranking
+            retrieved_docs, similarity_scores = await self.retrieve_and_rerank_with_fusion(query, CONTEXT_DOCS)
             
             if not retrieved_docs:
                 return {
@@ -1196,11 +1334,13 @@ class RAGSystem:
                     "processing_time": time.time() - start_time
                 }
             
-            # Calculate confidence
-            confidence = self._calculate_confidence(query, similarity_scores, retrieved_docs)
+            # Enhanced confidence calculation
+            confidence = self._calculate_enhanced_confidence(query, similarity_scores, retrieved_docs)
             
-            # Add confidence threshold check
-            if confidence < CONFIDENCE_THRESHOLD:
+            # More lenient confidence threshold for Constitution
+            threshold = CONFIDENCE_THRESHOLD * 0.8 if self.domain in ["legal", "constitutional"] else CONFIDENCE_THRESHOLD
+            
+            if confidence < threshold:
                 return {
                     "query": query,
                     "answer": "I don't have enough relevant information to answer this question accurately.",
@@ -1210,8 +1350,8 @@ class RAGSystem:
                     "processing_time": time.time() - start_time
                 }
             
-            # Optimize context
-            context = self.token_processor.optimize_context_fast(retrieved_docs, query)
+            # Smart context optimization
+            context = self.token_processor.optimize_context_smart(retrieved_docs, query)
             
             # Generate response
             answer = await self._generate_response(query, context, self.domain, confidence)
@@ -1241,10 +1381,10 @@ class RAGSystem:
                 "domain": self.domain,
                 "processing_time": time.time() - start_time
             }
-    
-    def _calculate_confidence(self, query: str, similarity_scores: List[float],
-                            retrieved_docs: List[Document]) -> float:
-        """Enhanced confidence calculation"""
+
+    def _calculate_enhanced_confidence(self, query: str, similarity_scores: List[float], 
+                                     retrieved_docs: List[Document]) -> float:
+        """Enhanced confidence calculation optimized for Constitution accuracy"""
         if not similarity_scores:
             return 0.0
         
@@ -1254,7 +1394,6 @@ class RAGSystem:
             # Handle FAISS inner product scores > 1.0
             if np.max(scores_array) > 1.0:
                 scores_array = scores_array / np.max(scores_array)
-            
             scores_array = np.clip(scores_array, 0.0, 1.0)
             
             max_score = np.max(scores_array)
@@ -1267,7 +1406,7 @@ class RAGSystem:
             # Query-document match
             query_match = self._calculate_query_match(query, retrieved_docs)
             
-            # Combined confidence
+            # Combined confidence (same weights as requested)
             confidence = (
                 0.35 * max_score +
                 0.25 * avg_score +
@@ -1282,12 +1421,21 @@ class RAGSystem:
                     confidence += 0.1
                     break
             
+            # Additional boost for Constitution-specific matches
+            if self.domain in ["legal", "constitutional"]:
+                for doc in retrieved_docs[:5]:
+                    content_lower = doc.page_content.lower()
+                    if any(term in query_lower and term in content_lower 
+                           for term in ['article', 'part', 'fundamental rights', 'constitution']):
+                        confidence += 0.15
+                        break
+            
             return min(1.0, max(0.0, confidence))
             
         except Exception as e:
             logger.warning(f"⚠️ Confidence calculation error: {e}")
             return 0.3
-    
+
     def _calculate_query_match(self, query: str, docs: List[Document]) -> float:
         """Calculate query-document match quality"""
         query_terms = set(query.lower().split())
@@ -1304,19 +1452,41 @@ class RAGSystem:
             if query.lower() in doc.page_content.lower():
                 match_score += 0.2
             
+            # Additional boost for Constitution-specific term matches
+            if self.domain in ["legal", "constitutional"]:
+                constitution_terms = {'article', 'part', 'fundamental', 'rights', 'constitution'}
+                constitution_overlap = len(query_terms.intersection(constitution_terms))
+                if constitution_overlap > 0:
+                    match_score += 0.1 * constitution_overlap
+            
             match_scores.append(match_score)
         
         return np.mean(match_scores) if match_scores else 0.5
-    
+
     async def _generate_response(self, query: str, context: str, domain: str, confidence: float) -> str:
-        """Generate response using Google Gemini"""
+        """Generate response using Google Gemini with Constitution optimization"""
         try:
             await ensure_gemini_ready()
             
             if not gemini_client:
                 return "System is still initializing. Please wait a moment and try again."
             
-            system_prompt = f"""You are an expert document analyst specializing in {domain} content. Provide accurate, helpful responses based on the provided context.
+            # Enhanced system prompt for Constitution
+            if domain in ["legal", "constitutional"]:
+                system_prompt = f"""You are an expert legal analyst specializing in Constitutional law and {domain} content. You have deep knowledge of the Indian Constitution, fundamental rights, directive principles, and constitutional provisions.
+
+INSTRUCTIONS:
+1. Provide accurate, precise answers based strictly on the provided context
+2. For Constitution-related queries, cite specific Articles, Parts, or provisions when relevant
+3. If information is not available in the context, clearly state this
+4. Be comprehensive but concise in your responses
+5. Maintain absolute accuracy and avoid speculation beyond the provided information
+6. For legal/constitutional questions, structure your answer clearly with relevant article numbers and provisions
+
+Confidence Level: {confidence:.1%}
+Domain: {domain}"""
+            else:
+                system_prompt = f"""You are an expert document analyst specializing in {domain} content. Provide accurate, helpful responses based on the provided context.
 
 INSTRUCTIONS:
 1. Answer questions directly based on the context provided
@@ -1339,71 +1509,34 @@ Please provide a comprehensive answer based on the context above."""
                 {"role": "user", "content": user_message}
             ]
             
-            # CHANGED: Using Gemini model instead of GPT-4o
+            # Use longer timeout for Constitution queries
+            timeout = QUESTION_TIMEOUT * 1.5 if domain in ["legal", "constitutional"] else QUESTION_TIMEOUT
+            
             response = await asyncio.wait_for(
                 gemini_client.chat.completions.create(
                     messages=messages,
-                    model="gemini-2.0-flash", # Changed from "gpt-4o"
-                    temperature=0.1,
-                    max_tokens=1000
+                    model="gemini-2.0-flash",
+                    temperature=0.05,  # Lower temperature for Constitution accuracy
+                    max_tokens=1500  # Increased for Constitution responses
                 ),
-                timeout=QUESTION_TIMEOUT
+                timeout=timeout
             )
             
             return response.choices[0].message.content.strip()
             
         except asyncio.TimeoutError:
-            logger.error(f"❌ Response generation timeout after {QUESTION_TIMEOUT}s")
+            logger.error(f"❌ Response generation timeout after {timeout}s")
             return "I apologize, but the response generation took too long. Please try again with a simpler question."
         except Exception as e:
             logger.error(f"❌ Response generation error: {e}")
             return f"I apologize, but I encountered an error while processing your query: {str(e)}"
 
 # ================================
-# UTILITY FUNCTIONS WITH SMART CACHING
+# OPTIMIZED EMBEDDING FUNCTIONS WITH BATCHING
 # ================================
 
-def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]],
-                          k_value: int = 60) -> List[Tuple[Document, float]]:
-    """Implement Reciprocal Rank Fusion for combining multiple result sets"""
-    if not results_list:
-        return []
-    
-    # Document scores accumulator
-    doc_scores = defaultdict(float)
-    seen_docs = {}
-    
-    # Weights for semantic and BM25
-    weights = {"semantic": 0.6, "bm25": 0.4}
-    
-    # Process each result set
-    for i, results in enumerate(results_list):
-        weight = weights.get("semantic" if i == 0 else "bm25", 1.0 / len(results_list))
-        
-        # Apply RRF scoring
-        for rank, (doc, score) in enumerate(results):
-            doc_key = hashlib.md5(doc.page_content.encode()).hexdigest()
-            rrf_score = weight / (k_value + rank + 1)
-            doc_scores[doc_key] += rrf_score
-            
-            if doc_key not in seen_docs:
-                seen_docs[doc_key] = doc
-    
-    # Sort by combined scores
-    sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
-    
-    # Return documents with normalized scores
-    max_score = sorted_docs[0][1] if sorted_docs else 1.0
-    result = []
-    for doc_key, score in sorted_docs:
-        normalized_score = score / max_score
-        result.append((seen_docs[doc_key], normalized_score))
-    
-    return result
-
-# OPTIMIZED EMBEDDING FUNCTION
 async def get_embeddings_batch_optimized(texts: List[str]) -> List[np.ndarray]:
-    """Process embeddings with simple batching - OPTIMIZED"""
+    """Process embeddings with optimized batching for Constitution accuracy"""
     if not texts:
         return []
     
@@ -1421,31 +1554,67 @@ async def get_embeddings_batch_optimized(texts: List[str]) -> List[np.ndarray]:
             uncached_texts.append(text)
             uncached_indices.append(i)
     
-    # Process uncached with SIMPLE batching (remove complex parallel infrastructure)
+    # Process uncached with optimized batching
     if uncached_texts:
         await ensure_models_ready()
+        
         if base_sentence_model:
-            # Single batch call - much faster than complex parallel processing
-            embeddings = await asyncio.to_thread(
-                base_sentence_model.encode,
-                uncached_texts,
-                show_progress_bar=False,
-                convert_to_numpy=True,
-                normalize_embeddings=True
-            )
-            
-            # Cache results
-            for text, embedding in zip(uncached_texts, embeddings):
-                text_hash = hashlib.md5(text.encode()).hexdigest()
-                CACHE_MANAGER.set_embedding(text_hash, embedding)
-            
-            # Add to results
-            for i, embedding in zip(uncached_indices, embeddings):
-                results.append((i, embedding))
+            try:
+                # Process in batches for better memory management
+                batch_size = OPTIMAL_BATCH_SIZE
+                all_embeddings = []
+                
+                for i in range(0, len(uncached_texts), batch_size):
+                    batch_texts = uncached_texts[i:i + batch_size]
+                    
+                    # Process batch
+                    batch_embeddings = await asyncio.to_thread(
+                        base_sentence_model.encode,
+                        batch_texts,
+                        show_progress_bar=False,
+                        convert_to_numpy=True,
+                        normalize_embeddings=True,
+                        batch_size=32  # Internal batch size
+                    )
+                    
+                    all_embeddings.extend(batch_embeddings)
+                    logger.info(f"✅ Processed embedding batch {(i//batch_size) + 1}/{(len(uncached_texts)-1)//batch_size + 1}")
+                
+                # Cache results
+                for text, embedding in zip(uncached_texts, all_embeddings):
+                    text_hash = hashlib.md5(text.encode()).hexdigest()
+                    CACHE_MANAGER.set_embedding(text_hash, embedding)
+                
+                # Add to results
+                for i, embedding in zip(uncached_indices, all_embeddings):
+                    results.append((i, embedding))
+                    
+            except Exception as e:
+                logger.error(f"❌ Batch embedding processing error: {e}")
+                # Fallback to individual processing
+                return await get_embeddings_fallback(texts)
     
     # Sort and return
     results.sort(key=lambda x: x[0])
     return [embedding for _, embedding in results]
+
+async def get_embeddings_fallback(texts: List[str]) -> List[np.ndarray]:
+    """Fallback embedding processing"""
+    try:
+        await ensure_models_ready()
+        if base_sentence_model:
+            embeddings = await asyncio.to_thread(
+                base_sentence_model.encode,
+                texts,
+                show_progress_bar=False,
+                convert_to_numpy=True
+            )
+            return list(embeddings)
+        else:
+            return [np.zeros(384) for _ in texts]
+    except Exception as e:
+        logger.error(f"❌ Fallback embedding error: {e}")
+        return [np.zeros(384) for _ in texts]
 
 async def get_query_embedding(query: str) -> np.ndarray:
     """Get single query embedding with smart caching"""
@@ -1477,18 +1646,15 @@ async def get_query_embedding(query: str) -> np.ndarray:
         logger.error(f"❌ Query embedding error: {e}")
         return np.zeros(384)
 
-# CHANGED: Renamed from ensure_openai_ready to ensure_gemini_ready
 async def ensure_gemini_ready():
     """Ensure Gemini client is ready"""
     global gemini_client
-    
     if gemini_client is None and GEMINI_API_KEY:
         try:
-            # CHANGED: Using Gemini API endpoint
             gemini_client = AsyncOpenAI(
                 api_key=GEMINI_API_KEY,
                 base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
+                timeout=httpx.Timeout(connect=10.0, read=90.0, write=30.0, pool=5.0),
                 max_retries=3
             )
             logger.info("✅ Gemini client initialized successfully")
@@ -1506,7 +1672,7 @@ async def ensure_models_ready():
         return
     
     async with _model_lock:
-        if _models_loaded and _startup_complete: # Double-check pattern
+        if _models_loaded and _startup_complete:  # Double-check pattern
             return
         
         logger.info("🔄 Loading pre-downloaded models...")
@@ -1522,7 +1688,7 @@ async def ensure_models_ready():
                 )
                 
                 # Enable faster inference
-                base_sentence_model.eval() # Set to evaluation mode
+                base_sentence_model.eval()  # Set to evaluation mode
                 
                 # Warm up the model
                 _ = base_sentence_model.encode("warmup", show_progress_bar=False)
@@ -1532,7 +1698,7 @@ async def ensure_models_ready():
             if reranker is None:
                 reranker = CrossEncoder(
                     RERANKER_MODEL_NAME,
-                    max_length=128, # Reduce from 256 for speed
+                    max_length=512,  # Increased for Constitution context
                     device='cpu'
                 )
                 
@@ -1564,14 +1730,14 @@ DOMAIN_DETECTOR = DomainDetector()
 async def lifespan(app: FastAPI):
     """Application lifespan manager - OPTIMIZED"""
     # Startup
-    logger.info("🚀 Starting HackRx RAG System...")
+    logger.info("🚀 Starting HackRx RAG System with Constitution Accuracy Optimizations...")
     start_time = time.time()
     
     try:
         # Load models first (critical path)
         await ensure_models_ready()
         
-        # CHANGED: Initialize Gemini client instead of OpenAI
+        # Initialize Gemini client
         if GEMINI_API_KEY:
             await ensure_gemini_ready()
         
@@ -1589,7 +1755,7 @@ async def lifespan(app: FastAPI):
     _document_cache.clear()
     CACHE_MANAGER.clear_all_caches()
     
-    # CHANGED: Close Gemini client instead of OpenAI
+    # Close Gemini client
     if gemini_client and hasattr(gemini_client, 'close'):
         try:
             await gemini_client.close()
@@ -1601,8 +1767,8 @@ async def lifespan(app: FastAPI):
 # Initialize FastAPI app
 app = FastAPI(
     title="HackRx RAG System",
-    description="Enhanced RAG System for HackRx Evaluation with Google Gemini",
-    version="2.0.0",
+    description="Enhanced RAG System for HackRx Evaluation with Constitution Accuracy Optimizations and Google Gemini",
+    version="3.0.0",
     lifespan=lifespan
 )
 
@@ -1624,8 +1790,17 @@ async def root():
     """Basic health check endpoint"""
     return {
         "status": "online",
-        "service": "HackRx RAG System with Google Gemini",
-        "version": "2.0.0",
+        "service": "HackRx RAG System with Constitution Accuracy Optimizations",
+        "version": "3.0.0",
+        "optimizations": [
+            "Increased context window (18 docs)",
+            "Larger chunks with overlap (1200/200)",
+            "Reciprocal Rank Fusion enabled",
+            "Cross-encoder reranking",
+            "Enhanced confidence calculation",
+            "Smart token optimization",
+            "Constitution domain detection"
+        ],
         "timestamp": datetime.now().isoformat()
     }
 
@@ -1665,7 +1840,7 @@ async def clear_cache_endpoint(request: Request):
 
 @app.post("/hackrx/run")
 async def hackrx_run_endpoint(request: Request):
-    """HackRx endpoint with MASSIVELY OPTIMIZED PARALLEL PROCESSING and CACHING"""
+    """HackRx endpoint with Constitution accuracy optimizations and parallel processing"""
     start_time = time.time()
     
     if not simple_auth_check(request):
@@ -1710,7 +1885,7 @@ async def hackrx_run_endpoint(request: Request):
                                key=lambda k: _document_cache[k][1])
                 del _document_cache[oldest_key]
         
-        # MASSIVELY OPTIMIZED PARALLEL QUESTION PROCESSING
+        # Enhanced parallel question processing for Constitution accuracy
         logger.info(f"❓ Processing {len(questions)} questions in parallel...")
         
         async def process_single_question(question: str) -> str:
@@ -1721,8 +1896,9 @@ async def hackrx_run_endpoint(request: Request):
                 logger.error(f"❌ Error processing question: {e}")
                 return f"Error processing question: {str(e)}"
         
-        # OPTIMIZATION - 300% SPEEDUP: Increase from 3 to 10 concurrent questions
-        semaphore = asyncio.Semaphore(10) # Max 10 concurrent questions
+        # Optimized concurrency - balance speed vs accuracy
+        max_concurrent = 8 if rag_system.domain in ["legal", "constitutional"] else 10
+        semaphore = asyncio.Semaphore(max_concurrent)
         
         async def bounded_process(question: str) -> str:
             async with semaphore:
@@ -1786,7 +1962,7 @@ if __name__ == "__main__":
     # Get port from environment variable (Cloud Run requirement)
     port = int(os.getenv("PORT", 8000))
     
-    logger.info(f"🚀 Starting HackRx RAG System with Google Gemini on port {port}")
+    logger.info(f"🚀 Starting HackRx RAG System with Constitution Accuracy Optimizations on port {port}")
     
     uvicorn.run(
         "main:app",
