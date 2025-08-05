@@ -89,18 +89,18 @@ GEMINI_API_KEY = 'AIzaSyA_fMjDSV25ADwsJ4YMnky4BQyVpuIIhT8'
 # SPEED-OPTIMIZED CONFIGURATION
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-CHUNK_SIZE = 600            # From 800 - reduces processing time
-CHUNK_OVERLAP = 75          # From 100 - maintains quality
-SEMANTIC_SEARCH_K = 8       # From 12 - still gets best results
-CONTEXT_DOCS = 6            # From 8 - optimal quality/speed balance
+CHUNK_SIZE = 600 # From 800 - reduces processing time
+CHUNK_OVERLAP = 75 # From 100 - maintains quality
+SEMANTIC_SEARCH_K = 8 # From 12 - still gets best results
+CONTEXT_DOCS = 6 # From 8 - optimal quality/speed balance
 CONFIDENCE_THRESHOLD = 0.15
-RERANK_TOP_K = 12          # From 20 - reranker gets top candidates
+RERANK_TOP_K = 12 # From 20 - reranker gets top candidates
 MAX_FILE_SIZE_MB = 50
-QUESTION_TIMEOUT = 8.0      # From 15.0 - faster timeout
+QUESTION_TIMEOUT = 8.0 # From 15.0 - faster timeout
 
 # PARALLEL PROCESSING - OPTIMIZED
-OPTIMAL_BATCH_SIZE = 32     # From 16 - better batching
-MAX_PARALLEL_BATCHES = 4    # From 2 - more parallelism (for embeddings only)
+OPTIMAL_BATCH_SIZE = 32 # From 16 - better batching
+MAX_PARALLEL_BATCHES = 4 # From 2 - more parallelism (for embeddings only)
 EMBEDDING_TIMEOUT = 60.0
 
 # Supported file types
@@ -146,7 +146,7 @@ _startup_complete = False
 
 # Cache for document processing
 _document_cache = {}
-_cache_ttl = 1800  # 30 minutes
+_cache_ttl = 1800 # 30 minutes
 
 # Global models
 base_sentence_model = None
@@ -159,13 +159,12 @@ gemini_client = None
 # ================================
 
 class SmartCacheManager:
-    """Smart cache manager with TTL/LRU primary and dict fallback"""
+    """Smart cache manager with document-based clearing"""
     
     def __init__(self):
-        # Primary caches (TTL for embeddings, LRU for document chunks)
         try:
             if HAS_CACHETOOLS:
-                self.embedding_cache = cachetools.TTLCache(maxsize=10000, ttl=86400)  # 24h TTL
+                self.embedding_cache = cachetools.TTLCache(maxsize=10000, ttl=86400)
                 self.document_chunk_cache = cachetools.LRUCache(maxsize=500)
                 self.domain_cache = cachetools.LRUCache(maxsize=1000)
                 self.primary_available = True
@@ -173,23 +172,43 @@ class SmartCacheManager:
             else:
                 raise ImportError("cachetools not available")
         except ImportError:
-            # Fallback to simple dicts if cachetools not available
             self.embedding_cache = {}
             self.document_chunk_cache = {}
             self.domain_cache = {}
             self.primary_available = False
-            logger.info("📦 Using dict fallback caching (cachetools not available)")
+            logger.info("📦 Using dict fallback caching")
         
-        # Thread-safe access
+        # Track current document session
+        self.current_document_hash = None
         self._lock = threading.RLock()
     
+    def set_current_document(self, document_hash: str):
+        """Set current document and clear caches if document changed"""
+        with self._lock:
+            if self.current_document_hash != document_hash:
+                if self.current_document_hash is not None:
+                    logger.info(f"🔄 Document changed from {self.current_document_hash[:8]} to {document_hash[:8]}")
+                    self.clear_all_caches()
+                else:
+                    logger.info(f"📄 Setting initial document: {document_hash[:8]}")
+                
+                self.current_document_hash = document_hash
+                logger.info("🧹 Caches cleared for new document")
+    
     def clear_all_caches(self):
-        """Clear ALL caches when new document is uploaded - prevents stale answers"""
+        """Clear ALL caches when new document is uploaded"""
         with self._lock:
             self.embedding_cache.clear()
-            self.document_chunk_cache.clear()
+            self.document_chunk_cache.clear() 
             self.domain_cache.clear()
-            logger.info("🧹 All caches cleared for new document upload")
+            logger.info("🧹 All caches cleared")
+    
+    def force_clear_all(self):
+        """Force clear all caches and reset document tracking"""
+        with self._lock:
+            self.clear_all_caches()
+            self.current_document_hash = None
+            logger.info("🧹 Force cleared all caches and reset document tracking")
     
     def get_embedding(self, text_hash: str) -> Optional[Any]:
         """Thread-safe embedding cache get"""
@@ -222,12 +241,10 @@ class SmartCacheManager:
             self.domain_cache[cache_key] = result
     
     def cleanup_if_needed(self):
-        """Only needed for dict fallback - TTL/LRU auto-manage"""
+        """Cleanup for dict fallback"""
         if not self.primary_available:
             with self._lock:
-                # Fallback cleanup for simple dicts
                 if len(self.embedding_cache) > 10000:
-                    # Keep most recent 5000
                     items = list(self.embedding_cache.items())[-5000:]
                     self.embedding_cache.clear()
                     self.embedding_cache.update(items)
@@ -243,37 +260,63 @@ class SmartCacheManager:
                     self.domain_cache.update(items)
     
     def get_cache_stats(self) -> Dict[str, Any]:
-        """Get cache statistics"""
+        """Get cache statistics with document tracking"""
         with self._lock:
             return {
                 "embedding_cache_size": len(self.embedding_cache),
                 "document_chunk_cache_size": len(self.document_chunk_cache),
                 "domain_cache_size": len(self.domain_cache),
+                "current_document": self.current_document_hash[:8] if self.current_document_hash else None,
                 "primary_cache_available": self.primary_available,
                 "cache_type": "TTLCache/LRUCache" if self.primary_available else "dict_fallback"
             }
 
-# Query Result Cache - NEW ADDITION
+# Query Result Cache with Document Tracking
 class QueryResultCache:
+    """Query result cache with document-based clearing"""
+    
     def __init__(self):
         self.cache = {}
         self.max_size = 1000
+        self.current_document_hash = None
         self._lock = threading.RLock()
+    
+    def set_current_document(self, document_hash: str):
+        """Set current document and clear cache if document changed"""
+        with self._lock:
+            if self.current_document_hash != document_hash:
+                if self.current_document_hash is not None:
+                    logger.info(f"🔄 Query cache: Document changed, clearing cache")
+                    self.cache.clear()
+                
+                self.current_document_hash = document_hash
     
     def get_cached_answer(self, query: str, doc_hash: str) -> Optional[str]:
         with self._lock:
-            cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{doc_hash[:8]}"
-            return self.cache.get(cache_key)
+            # Only return cached answer if it's for the current document
+            if self.current_document_hash == doc_hash:
+                cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{doc_hash[:8]}"
+                return self.cache.get(cache_key)
+            return None
     
     def cache_answer(self, query: str, doc_hash: str, answer: str):
         with self._lock:
-            cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{doc_hash[:8]}"
-            if len(self.cache) >= self.max_size:
-                # Remove oldest 20%
-                old_keys = list(self.cache.keys())[:200]
-                for key in old_keys:
-                    del self.cache[key]
-            self.cache[cache_key] = answer
+            if self.current_document_hash == doc_hash:
+                cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{doc_hash[:8]}"
+                
+                if len(self.cache) >= self.max_size:
+                    # Remove oldest 20%
+                    old_keys = list(self.cache.keys())[:200]
+                    for key in old_keys:
+                        del self.cache[key]
+                
+                self.cache[cache_key] = answer
+    
+    def clear_cache(self):
+        """Clear all cached queries"""
+        with self._lock:
+            self.cache.clear()
+            logger.info("🧹 Query cache cleared")
 
 # Global cache manager instances
 CACHE_MANAGER = SmartCacheManager()
@@ -296,9 +339,9 @@ def simple_auth_check(request: Request) -> bool:
 def sanitize_pii(text: str) -> str:
     """Remove PII patterns from text"""
     patterns = [
-        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',  # emails
-        r'\b\d{3}-\d{3}-\d{4}\b',  # phone numbers
-        r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b'  # credit cards
+        r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b', # emails
+        r'\b\d{3}-\d{3}-\d{4}\b', # phone numbers
+        r'\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b' # credit cards
     ]
     
     sanitized = text
@@ -336,7 +379,7 @@ def sanitize_for_json(data):
         return [sanitize_for_json(v) for v in data]
     elif isinstance(data, (np.integer, np.floating, np.bool_)):
         return convert_numpy_types(data)
-    elif hasattr(data, 'item'):  # numpy scalar
+    elif hasattr(data, 'item'): # numpy scalar
         return data.item()
     elif isinstance(data, (np.ndarray,)):
         return data.tolist()
@@ -428,23 +471,45 @@ class UnifiedLoader:
                 os.unlink(temp_path)
     
     def _transform_special_url(self, url: str) -> str:
-        """Transform special URLs to direct download links"""
-        # Enhanced Google Drive transformation
-        for pattern in self.drive_patterns:
+        """Transform special URLs to direct download links - ENHANCED"""
+        
+        # Enhanced Google Drive transformation - handle multiple formats
+        google_drive_patterns = [
+            r'drive\.google\.com/file/d/([a-zA-Z0-9-_]+)',
+            r'docs\.google\.com/document/d/([a-zA-Z0-9-_]+)',
+            r'drive\.google\.com/open\?id=([a-zA-Z0-9-_]+)',
+            r'docs\.google\.com/.*[&?]id=([a-zA-Z0-9-_]+)'
+        ]
+        
+        for pattern in google_drive_patterns:
             match = re.search(pattern, url)
             if match:
-                file_id = match.group(1) if match.groups() else None
-                if file_id:
-                    return f"https://drive.google.com/uc?export=download&id={file_id}"
+                file_id = match.group(1)
+                # Use export format for better compatibility
+                return f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        # Handle Google Drive sharing links
+        if 'drive.google.com' in url and '/view' in url:
+            # Extract file ID from sharing URL
+            match = re.search(r'/file/d/([a-zA-Z0-9-_]+)', url)
+            if match:
+                file_id = match.group(1)
+                return f"https://drive.google.com/uc?export=download&id={file_id}"
         
         # Enhanced Dropbox transformation
-        for pattern in self.dropbox_patterns:
+        dropbox_patterns = [
+            r'dropbox\.com/s/([a-zA-Z0-9]+)',
+            r'dropbox\.com/sh/([a-zA-Z0-9]+)',
+            r'dropbox\.com/scl/fi/([^/]+)'
+        ]
+        
+        for pattern in dropbox_patterns:
             if re.search(pattern, url):
-                # Handle both sharing formats
                 if '?dl=0' in url:
                     url = url.replace('?dl=0', '?dl=1')
                 elif '?dl=1' not in url:
-                    url += '?dl=1' if '?' not in url else '&dl=1'
+                    separator = '&' if '?' in url else '?'
+                    url += f'{separator}dl=1'
                 return url.replace('dropbox.com', 'dl.dropboxusercontent.com')
         
         return url
@@ -476,7 +541,7 @@ class UnifiedLoader:
         # Basic content-based detection
         if content.startswith(b'%PDF'):
             return '.pdf'
-        elif b'PK' in content[:10]:  # ZIP-based formats
+        elif b'PK' in content[:10]: # ZIP-based formats
             return '.docx'
         return '.txt'
     
@@ -585,8 +650,8 @@ class AdaptiveTextSplitter:
         # Check cache using cache manager
         content_hash = self._calculate_content_hash(documents)
         cache_key = f"chunks_{content_hash}_{detected_domain}"
-        cached_chunks = CACHE_MANAGER.get_document_chunks(cache_key)
         
+        cached_chunks = CACHE_MANAGER.get_document_chunks(cache_key)
         if cached_chunks is not None:
             logger.info(f"📄 Using cached chunks: {len(cached_chunks)} chunks")
             return cached_chunks
@@ -708,7 +773,7 @@ class FAISSVectorStore:
                 raise ValueError("Number of documents must match number of embeddings")
             
             # Convert embeddings in chunks to avoid memory spikes
-            chunk_size = 256  # Process 256 embeddings at a time
+            chunk_size = 256 # Process 256 embeddings at a time
             for i in range(0, len(embeddings), chunk_size):
                 end_idx = min(i + chunk_size, len(embeddings))
                 chunk_embeddings = np.array(embeddings[i:end_idx], dtype=np.float32)
@@ -725,7 +790,7 @@ class FAISSVectorStore:
                 logger.info(f"✅ Added chunk {i//chunk_size + 1}/{(len(embeddings)-1)//chunk_size + 1}")
             
             logger.info(f"✅ Added {len(documents)} documents to FAISS index (total: {len(self.documents)})")
-        
+            
         except Exception as e:
             logger.error(f"❌ Error adding documents to FAISS: {e}")
             raise
@@ -755,7 +820,7 @@ class FAISSVectorStore:
                     results.append((doc, normalized_score))
             
             return results
-        
+            
         except Exception as e:
             logger.error(f"❌ Error in FAISS similarity search: {e}")
             return []
@@ -805,7 +870,7 @@ class DomainDetector:
                 return result
             
             return "general", confidence_threshold
-        
+            
         except Exception as e:
             logger.warning(f"⚠️ Domain detection error: {e}")
             return "general", confidence_threshold
@@ -836,6 +901,7 @@ class TokenProcessor:
     def __init__(self):
         self.max_context_tokens = 4000
         self.tokenizer = None
+        
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception as e:
@@ -846,7 +912,7 @@ class TokenProcessor:
         if not text:
             return 0
         # Simple heuristic that's nearly as accurate
-        return max(1, int(len(text) / 3.8))  # Average chars per token
+        return max(1, int(len(text) / 3.8)) # Average chars per token
     
     def optimize_context_fast(self, documents: List[Document], query: str) -> str:
         """Fast context optimization - skip complex token budget calculations"""
@@ -856,7 +922,7 @@ class TokenProcessor:
         # Simple but effective: take top 6 documents, truncate if too long
         context_parts = []
         total_chars = 0
-        max_chars = 12000  # ~3000 tokens
+        max_chars = 12000 # ~3000 tokens
         
         for doc in documents[:6]:
             if total_chars + len(doc.page_content) <= max_chars:
@@ -932,22 +998,24 @@ class RAGSystem:
         }
     
     async def process_documents(self, sources: List[str]) -> Dict[str, Any]:
-        """Process documents with smart caching - OPTIMIZED"""
+        """Process documents with enhanced caching management"""
         start_time = time.time()
         
         # Generate document signature for caching
         doc_signature = hashlib.md5(str(sorted(sources)).encode()).hexdigest()
         
+        # Set current document in cache managers (this will clear if changed)
+        CACHE_MANAGER.set_current_document(doc_signature)
+        QUERY_CACHE.set_current_document(doc_signature)
+        
         # Check if we already processed these exact documents
         if hasattr(self, '_last_doc_signature') and self._last_doc_signature == doc_signature:
-            logger.info("📄 Documents already processed, skipping...")
+            logger.info("📄 Documents already processed, using existing processing...")
             return {"cached": True, "processing_time": 0.001}
         
-        # Only clear caches if documents actually changed
-        if not hasattr(self, '_last_doc_signature') or self._last_doc_signature != doc_signature:
-            CACHE_MANAGER.clear_all_caches()
-            self._last_doc_signature = doc_signature
-            logger.info("🧹 Caches cleared for new documents")
+        # Update document signature
+        self._last_doc_signature = doc_signature
+        logger.info(f"📄 Processing new documents with signature: {doc_signature[:8]}")
         
         try:
             logger.info(f"📄 Processing {len(sources)} documents")
@@ -981,12 +1049,13 @@ class RAGSystem:
                 'domain': domain,
                 'domain_confidence': float(domain_confidence),
                 'total_chunks': len(self.documents),
-                'processing_time': processing_time
+                'processing_time': processing_time,
+                'document_signature': doc_signature[:8]
             }
             
             logger.info(f"✅ Processing complete in {processing_time:.2f}s")
             return sanitize_for_json(result)
-        
+            
         except Exception as e:
             logger.error(f"❌ Document processing error: {e}")
             raise
@@ -1009,6 +1078,7 @@ class RAGSystem:
                     
                     # Add to FAISS
                     await self.vector_store.add_documents(self.documents, embeddings)
+                    
                     logger.info("✅ FAISS vector store setup complete")
                 except Exception as e:
                     logger.warning(f"⚠️ FAISS setup failed: {e}")
@@ -1024,7 +1094,7 @@ class RAGSystem:
                     logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
             except Exception as e:
                 logger.warning(f"⚠️ BM25 retriever setup failed: {e}")
-        
+                
         except Exception as e:
             logger.error(f"❌ Retriever setup error: {e}")
     
@@ -1052,12 +1122,12 @@ class RAGSystem:
         if self.bm25_retriever and len(vector_docs) < 8:
             try:
                 bm25_results = await asyncio.to_thread(self.bm25_retriever.invoke, query) or []
-                bm25_docs = bm25_results[:4]  # Take top 4 from BM25
+                bm25_docs = bm25_results[:4] # Take top 4 from BM25
             except Exception as e:
                 logger.warning(f"⚠️ BM25 search failed: {e}")
         
         # Combine results (simple fusion)
-        all_docs = vector_docs[:6] + bm25_docs[:2]  # 6 vector + 2 BM25
+        all_docs = vector_docs[:6] + bm25_docs[:2] # 6 vector + 2 BM25
         
         # Remove duplicates
         seen_content = set()
@@ -1075,8 +1145,10 @@ class RAGSystem:
                 scores = reranker.predict(pairs)
                 scored_docs = list(zip(unique_docs[:len(scores)], scores))
                 scored_docs.sort(key=lambda x: x[1], reverse=True)
+                
                 final_docs = [doc for doc, _ in scored_docs[:top_k]]
                 final_scores = [score for _, score in scored_docs[:top_k]]
+                
                 return final_docs, final_scores
             except Exception as e:
                 logger.warning(f"⚠️ Reranking failed: {e}")
@@ -1091,6 +1163,7 @@ class RAGSystem:
             # Check query cache first
             doc_hash = getattr(self, '_last_doc_signature', 'unknown')
             cached_answer = QUERY_CACHE.get_cached_answer(query, doc_hash)
+            
             if cached_answer:
                 return {
                     "query": query,
@@ -1158,7 +1231,7 @@ class RAGSystem:
             QUERY_CACHE.cache_answer(query, doc_hash, answer)
             
             return sanitize_for_json(result)
-        
+            
         except Exception as e:
             logger.error(f"❌ Query processing error: {e}")
             return {
@@ -1181,6 +1254,7 @@ class RAGSystem:
             # Handle FAISS inner product scores > 1.0
             if np.max(scores_array) > 1.0:
                 scores_array = scores_array / np.max(scores_array)
+            
             scores_array = np.clip(scores_array, 0.0, 1.0)
             
             max_score = np.max(scores_array)
@@ -1209,7 +1283,7 @@ class RAGSystem:
                     break
             
             return min(1.0, max(0.0, confidence))
-        
+            
         except Exception as e:
             logger.warning(f"⚠️ Confidence calculation error: {e}")
             return 0.3
@@ -1269,7 +1343,7 @@ Please provide a comprehensive answer based on the context above."""
             response = await asyncio.wait_for(
                 gemini_client.chat.completions.create(
                     messages=messages,
-                    model="gemini-2.0-flash",  # Changed from "gpt-4o"
+                    model="gemini-2.0-flash", # Changed from "gpt-4o"
                     temperature=0.1,
                     max_tokens=1000
                 ),
@@ -1277,11 +1351,10 @@ Please provide a comprehensive answer based on the context above."""
             )
             
             return response.choices[0].message.content.strip()
-        
+            
         except asyncio.TimeoutError:
             logger.error(f"❌ Response generation timeout after {QUESTION_TIMEOUT}s")
             return "I apologize, but the response generation took too long. Please try again with a simpler question."
-        
         except Exception as e:
             logger.error(f"❌ Response generation error: {e}")
             return f"I apologize, but I encountered an error while processing your query: {str(e)}"
@@ -1400,7 +1473,6 @@ async def get_query_embedding(query: str) -> np.ndarray:
         else:
             logger.warning("⚠️ No embedding model available for query")
             return np.zeros(384)
-    
     except Exception as e:
         logger.error(f"❌ Query embedding error: {e}")
         return np.zeros(384)
@@ -1434,7 +1506,7 @@ async def ensure_models_ready():
         return
     
     async with _model_lock:
-        if _models_loaded and _startup_complete:  # Double-check pattern
+        if _models_loaded and _startup_complete: # Double-check pattern
             return
         
         logger.info("🔄 Loading pre-downloaded models...")
@@ -1448,8 +1520,9 @@ async def ensure_models_ready():
                     device='cpu',
                     cache_folder=os.getenv('SENTENCE_TRANSFORMERS_HOME', None)
                 )
+                
                 # Enable faster inference
-                base_sentence_model.eval()  # Set to evaluation mode
+                base_sentence_model.eval() # Set to evaluation mode
                 
                 # Warm up the model
                 _ = base_sentence_model.encode("warmup", show_progress_bar=False)
@@ -1459,7 +1532,7 @@ async def ensure_models_ready():
             if reranker is None:
                 reranker = CrossEncoder(
                     RERANKER_MODEL_NAME,
-                    max_length=128,  # Reduce from 256 for speed
+                    max_length=128, # Reduce from 256 for speed
                     device='cpu'
                 )
                 
@@ -1472,7 +1545,7 @@ async def ensure_models_ready():
             
             load_time = time.time() - start_time
             logger.info(f"✅ All models ready in {load_time:.2f}s")
-        
+            
         except Exception as e:
             logger.error(f"❌ Failed to load models: {e}")
             raise
@@ -1504,7 +1577,7 @@ async def lifespan(app: FastAPI):
         
         startup_time = time.time() - start_time
         logger.info(f"✅ System fully initialized in {startup_time:.2f}s")
-    
+        
     except Exception as e:
         logger.error(f"❌ Startup failed: {e}")
         raise
@@ -1558,8 +1631,37 @@ async def root():
 
 @app.get("/cache-stats")
 async def get_cache_stats():
-    """Cache statistics endpoint"""
-    return CACHE_MANAGER.get_cache_stats()
+    """Enhanced cache statistics"""
+    try:
+        stats = CACHE_MANAGER.get_cache_stats()
+        stats.update({
+            "query_cache_size": len(QUERY_CACHE.cache),
+            "document_cache_size": len(_document_cache),
+            "query_cache_document": QUERY_CACHE.current_document_hash[:8] if QUERY_CACHE.current_document_hash else None
+        })
+        return stats
+    except Exception as e:
+        return {"error": str(e)}
+
+@app.post("/clear-cache")
+async def clear_cache_endpoint(request: Request):
+    """Clear all caches manually"""
+    if not simple_auth_check(request):
+        raise HTTPException(status_code=401, detail="Invalid authentication token")
+    
+    try:
+        CACHE_MANAGER.force_clear_all()
+        QUERY_CACHE.clear_cache()
+        _document_cache.clear()
+        
+        return {
+            "status": "success",
+            "message": "All caches cleared successfully",
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"❌ Cache clearing error: {e}")
+        raise HTTPException(status_code=500, detail=f"Cache clearing failed: {str(e)}")
 
 @app.post("/hackrx/run")
 async def hackrx_run_endpoint(request: Request):
@@ -1620,7 +1722,7 @@ async def hackrx_run_endpoint(request: Request):
                 return f"Error processing question: {str(e)}"
         
         # OPTIMIZATION - 300% SPEEDUP: Increase from 3 to 10 concurrent questions
-        semaphore = asyncio.Semaphore(10)  # Max 10 concurrent questions
+        semaphore = asyncio.Semaphore(10) # Max 10 concurrent questions
         
         async def bounded_process(question: str) -> str:
             async with semaphore:
@@ -1636,7 +1738,7 @@ async def hackrx_run_endpoint(request: Request):
         logger.info(f"✅ Completed {len(questions)} questions in {processing_time:.2f}s")
         
         return {"answers": answers}
-    
+        
     except Exception as e:
         logger.error(f"❌ HackRx endpoint error: {e}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
@@ -1670,7 +1772,7 @@ async def general_exception_handler(request: Request, exc: Exception):
             "error": True,
             "detail": "Internal server error occurred",
             "status_code": 500,
-            "timestamp": datetime.now().iisoformat()
+            "timestamp": datetime.now().isoformat()
         }
     )
 
@@ -1683,6 +1785,7 @@ if __name__ == "__main__":
     
     # Get port from environment variable (Cloud Run requirement)
     port = int(os.getenv("PORT", 8000))
+    
     logger.info(f"🚀 Starting HackRx RAG System with Google Gemini on port {port}")
     
     uvicorn.run(
