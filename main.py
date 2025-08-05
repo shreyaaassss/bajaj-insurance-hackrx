@@ -25,7 +25,7 @@ import numpy as np
 
 # FastAPI and web
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import httpx
@@ -78,31 +78,35 @@ logger = logging.getLogger(__name__)
 # ================================
 # PERSISTENT DOCUMENT CACHE
 # ================================
-DOCUMENT_CACHE = {}
+
+# Persistent cache for preprocessed document data
+DOCUMENT_CACHE = {}  # key: document_url, value: { "domain": ..., "domain_confidence": ..., "documents": ..., "vector_store": ..., "bm25_retriever": ...}
 DOCUMENT_CACHE_LOCK = threading.RLock()
 
 async def get_or_process_document_async(documents_url, rag_system):
     """Get cached document processing results or process if not cached - ASYNC VERSION"""
     with DOCUMENT_CACHE_LOCK:
         cached = DOCUMENT_CACHE.get(documents_url)
-        if cached:
-            logger.info(f"📦 Using cached document processing for {sanitize_pii(documents_url)}")
-            # Restore cached state to the RAGSystem instance
-            rag_system.domain = cached["domain"]
-            rag_system.documents = cached["documents"]
-            rag_system.vector_store = cached["vector_store"]
-            rag_system.bm25_retriever = cached["bm25_retriever"]
-            return {
-                "domain": cached["domain"],
-                "domain_confidence": cached["domain_confidence"],
-                "total_chunks": len(cached["documents"]),
-                "processing_time": cached.get("processing_time", 0)
-            }
-
+    
+    if cached:
+        logger.info(f"📦 Using cached document processing for {sanitize_pii(documents_url)}")
+        # Restore cached state to the RAGSystem instance
+        rag_system.domain = cached["domain"]
+        rag_system.documents = cached["documents"]
+        rag_system.vector_store = cached["vector_store"]
+        rag_system.bm25_retriever = cached["bm25_retriever"]
+        return {
+            "domain": cached["domain"],
+            "domain_confidence": cached["domain_confidence"],
+            "total_chunks": len(cached["documents"]),
+            "processing_time": cached.get("processing_time", 0)
+        }
+    
     # Not in cache, process and save
     logger.info(f"🔄 Processing new document: {sanitize_pii(documents_url)}")
+    # FIXED: Use await instead of run_until_complete
     result = await rag_system.process_documents([documents_url])
-
+    
     # Store items in cache
     with DOCUMENT_CACHE_LOCK:
         DOCUMENT_CACHE[documents_url] = {
@@ -113,22 +117,20 @@ async def get_or_process_document_async(documents_url, rag_system):
             "bm25_retriever": rag_system.bm25_retriever,
             "processing_time": result["processing_time"],
         }
-
     logger.info(f"💾 Cached document processing results for {sanitize_pii(documents_url)}")
     return result
 
+
 # ================================
-# OPTIMIZED CONFIGURATION
+# CONFIGURATION
 # ================================
+
 HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-# OPTIMIZED CHUNK SETTINGS - Doubled chunk size to reduce total chunks
-CHUNK_SIZE = 2400  # Increased from 1200
-CHUNK_OVERLAP = 300  # Adjusted accordingly
-
+CHUNK_SIZE = 1200
+CHUNK_OVERLAP = 200
 SEMANTIC_SEARCH_K = 24
 CONTEXT_DOCS = 18
 CONFIDENCE_THRESHOLD = 0.15
@@ -136,12 +138,9 @@ RERANK_TOP_K = 35
 MMR_LAMBDA = 0.75
 MAX_FILE_SIZE_MB = 100
 QUESTION_TIMEOUT = 25.0
-
-# OPTIMIZED PARALLEL PROCESSING SETTINGS
-OPTIMAL_BATCH_SIZE = 32  # Increased from 16 for better throughput
-MAX_CONCURRENT_BATCHES = 8  # Increased from 4 for better parallelism
+OPTIMAL_BATCH_SIZE = 24
+MAX_CONCURRENT_BATCHES = 3
 PARALLEL_EMBEDDING_ENABLED = True
-
 SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.txt', '.md', '.csv']
 SUPPORTED_URL_SCHEMES = ['http', 'https', 'blob', 'drive', 'dropbox']
 
@@ -183,6 +182,7 @@ openai_client = None
 # ================================
 # ENHANCED CACHING SYSTEM
 # ================================
+
 class SmartCacheManager:
     """Smart cache manager with TTL/LRU primary and dict fallback"""
     
@@ -211,7 +211,7 @@ class SmartCacheManager:
             self.embedding_cache.clear()
             self.document_chunk_cache.clear()
             self.domain_cache.clear()
-            logger.info("🧹 All caches cleared for new document upload")
+        logger.info("🧹 All caches cleared for new document upload")
 
     def get_embedding(self, text_hash: str) -> Optional[Any]:
         with self._lock:
@@ -271,6 +271,7 @@ CACHE_MANAGER = SmartCacheManager()
 # ================================
 # SIMPLE AUTHENTICATION
 # ================================
+
 def simple_auth_check(request: Request) -> bool:
     """Simple authentication check"""
     auth = request.headers.get("Authorization", "")
@@ -280,6 +281,7 @@ def simple_auth_check(request: Request) -> bool:
 # ================================
 # UTILITY FUNCTIONS
 # ================================
+
 def sanitize_pii(text: str) -> str:
     """Remove PII patterns from text"""
     patterns = [
@@ -329,6 +331,7 @@ def sanitize_for_json(data):
 # ================================
 # ENHANCED UNIFIED LOADER
 # ================================
+
 class UnifiedLoader:
     """Unified document loader with URL support"""
     
@@ -360,6 +363,7 @@ class UnifiedLoader:
             
             logger.info(f"✅ Loaded {len(docs)} documents from {sanitize_pii(source)}")
             return docs
+        
         except Exception as e:
             logger.error(f"❌ Failed to load {sanitize_pii(source)}: {e}")
             raise
@@ -372,6 +376,7 @@ class UnifiedLoader:
             raise ValueError(f"Unsupported URL scheme: {urlparse(url).scheme}")
         
         download_url = self._transform_special_url(url)
+        
         timeout = 30.0
         if any(pattern in url for pattern in ['drive.google.com', 'dropbox.com']):
             timeout = 60.0
@@ -511,6 +516,7 @@ class UnifiedLoader:
 # ================================
 # ADAPTIVE TEXT SPLITTER
 # ================================
+
 class AdaptiveTextSplitter:
     """Adaptive text splitter with smart caching"""
     
@@ -523,7 +529,7 @@ class AdaptiveTextSplitter:
     def split_documents(self, documents: List[Document], detected_domain: str = "general") -> List[Document]:
         if not documents:
             return []
-        
+
         content_hash = self._calculate_content_hash(documents)
         cache_key = f"chunks_{content_hash}_{detected_domain}"
         
@@ -531,10 +537,10 @@ class AdaptiveTextSplitter:
         if cached_chunks is not None:
             logger.info(f"📄 Using cached chunks: {len(cached_chunks)} chunks")
             return cached_chunks
-        
+
         chunk_size, chunk_overlap = self._adapt_for_content(detected_domain)
-        all_chunks = []
         
+        all_chunks = []
         for doc in documents:
             try:
                 chunks = self._split_document(doc, chunk_size, chunk_overlap)
@@ -543,7 +549,7 @@ class AdaptiveTextSplitter:
                 logger.warning(f"⚠️ Error splitting document: {e}")
                 chunks = self._simple_split(doc, chunk_size, chunk_overlap)
                 all_chunks.extend(chunks)
-        
+
         all_chunks = [chunk for chunk in all_chunks if len(chunk.page_content.strip()) >= 50]
         
         CACHE_MANAGER.set_document_chunks(cache_key, all_chunks)
@@ -563,13 +569,15 @@ class AdaptiveTextSplitter:
         multiplier = domain_multipliers.get(detected_domain, 1.0)
         adapted_size = int(CHUNK_SIZE * multiplier)
         adapted_overlap = min(adapted_size // 4, int(CHUNK_OVERLAP * 1.2))
-        adapted_size = max(1200, min(4000, adapted_size))  # Increased max size
+        adapted_size = max(600, min(2000, adapted_size))
+        
         return adapted_size, adapted_overlap
 
     def _split_document(self, document: Document, chunk_size: int, chunk_overlap: int) -> List[Document]:
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size, chunk_overlap=chunk_overlap, separators=self.separators
         )
+        
         chunks = splitter.split_documents([document])
         
         for i, chunk in enumerate(chunks):
@@ -588,10 +596,11 @@ class AdaptiveTextSplitter:
             return [document]
 
 # ================================
-# OPTIMIZED FAISS VECTOR STORE
+# FAISS VECTOR STORE
 # ================================
+
 class FAISSVectorStore:
-    """Optimized FAISS-based vector store implementation with IVF index"""
+    """FAISS-based vector store implementation"""
     
     def __init__(self, dimension: int = 384):
         self.dimension = dimension
@@ -604,26 +613,16 @@ class FAISSVectorStore:
             raise ImportError("FAISS not available")
         
         try:
-            # Use IVF index instead of flat for better performance on large datasets
-            nlist = 100  # Number of clusters
-            quantizer = faiss.IndexFlatIP(self.dimension)
-            self.index = faiss.IndexIVFFlat(quantizer, self.dimension, nlist)
-            self.is_trained = False  # Needs training
-            logger.info("✅ FAISS IVF vector store initialized")
+            self.index = faiss.IndexFlatIP(self.dimension)
+            self.is_trained = True
+            logger.info("✅ FAISS vector store initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize FAISS: {e}")
-            # Fallback to flat index
-            try:
-                self.index = faiss.IndexFlatIP(self.dimension)
-                self.is_trained = True
-                logger.info("✅ FAISS flat vector store initialized (fallback)")
-            except Exception as e2:
-                logger.error(f"❌ Failed to initialize fallback FAISS: {e2}")
-                raise
+            raise
 
     async def add_documents(self, documents: List[Document], embeddings: List[np.ndarray]):
         try:
-            if not self.is_trained and hasattr(self.index, 'is_trained'):
+            if not self.is_trained:
                 self.initialize()
             
             if len(documents) != len(embeddings):
@@ -632,23 +631,11 @@ class FAISSVectorStore:
             embeddings_array = np.array(embeddings, dtype=np.float32)
             faiss.normalize_L2(embeddings_array)
             
-            # Train the index if it's an IVF index and not trained
-            if hasattr(self.index, 'is_trained') and not self.index.is_trained:
-                if len(embeddings_array) >= 100:  # Need enough samples for training
-                    self.index.train(embeddings_array)
-                    # Set search parameters for better performance
-                    self.index.nprobe = min(10, len(embeddings_array) // 10)
-                    logger.info("✅ FAISS IVF index trained")
-                else:
-                    # Not enough data for IVF, fallback to flat index
-                    logger.info("⚠️ Not enough data for IVF training, using flat index")
-                    self.index = faiss.IndexFlatIP(self.dimension)
-                    self.is_trained = True
-            
             self.index.add(embeddings_array)
             self.documents.extend(documents)
             
             logger.info(f"✅ Added {len(documents)} documents to FAISS index (total: {len(self.documents)})")
+        
         except Exception as e:
             logger.error(f"❌ Error adding documents to FAISS: {e}")
             raise
@@ -672,6 +659,7 @@ class FAISSVectorStore:
                     results.append((doc, normalized_score))
             
             return results
+        
         except Exception as e:
             logger.error(f"❌ Error in FAISS similarity search: {e}")
             return []
@@ -684,6 +672,7 @@ class FAISSVectorStore:
 # ================================
 # DOMAIN DETECTOR
 # ================================
+
 class DomainDetector:
     """Universal domain detector with smart caching"""
     
@@ -712,10 +701,12 @@ class DomainDetector:
                 
                 result = (best_domain, best_score)
                 CACHE_MANAGER.set_domain_result(cache_key, result)
+                
                 logger.info(f"🔍 Domain detected: {best_domain} (confidence: {best_score:.2f})")
                 return result
             
             return "general", confidence_threshold
+        
         except Exception as e:
             logger.warning(f"⚠️ Domain detection error: {e}")
             return "general", confidence_threshold
@@ -734,6 +725,7 @@ class DomainDetector:
 # ================================
 # TOKEN PROCESSOR
 # ================================
+
 class TokenProcessor:
     """Token optimization processor"""
     
@@ -789,6 +781,7 @@ class TokenProcessor:
         
         context = "\n\n".join(context_parts)
         estimated_tokens = self.estimate_tokens(context)
+        
         logger.info(f"🔍 Context optimized: {len(context_parts)} documents, ~{estimated_tokens} tokens")
         return context
 
@@ -808,6 +801,7 @@ class TokenProcessor:
             length_penalty = 0.8 if len(doc.page_content) < 100 else 1.0
             
             return min(1.0, keyword_overlap * position_boost * length_penalty)
+        
         except Exception as e:
             logger.warning(f"⚠️ Error calculating relevance: {e}")
             return 0.5
@@ -820,13 +814,15 @@ class TokenProcessor:
         keep_chars = max_chars - 100
         first_part = content[:keep_chars // 2]
         last_part = content[-keep_chars // 2:]
+        
         return f"{first_part}\n\n[... content truncated ...]\n\n{last_part}"
 
 # ================================
 # RAG SYSTEM
 # ================================
+
 class RAGSystem:
-    """Enhanced RAG system with performance optimizations"""
+    """Enhanced RAG system with smart caching and cleanup"""
     
     def __init__(self):
         self.documents = []
@@ -864,6 +860,7 @@ class RAGSystem:
             
             domain, domain_confidence = DOMAIN_DETECTOR.detect_domain(raw_documents)
             self.domain = domain
+            
             logger.info(f"🔍 Detected domain: {domain} (confidence: {domain_confidence:.2f})")
             
             self.documents = self.text_splitter.split_documents(raw_documents, domain)
@@ -871,6 +868,7 @@ class RAGSystem:
             await self._setup_retrievers()
             
             processing_time = time.time() - start_time
+            
             result = {
                 'domain': domain, 'domain_confidence': float(domain_confidence),
                 'total_chunks': len(self.documents), 'processing_time': processing_time
@@ -878,6 +876,7 @@ class RAGSystem:
             
             logger.info(f"✅ Processing complete in {processing_time:.2f}s")
             return sanitize_for_json(result)
+        
         except Exception as e:
             logger.error(f"❌ Document processing error: {e}")
             raise
@@ -894,9 +893,10 @@ class RAGSystem:
                     
                     doc_texts = [doc.page_content for doc in self.documents]
                     embeddings = await get_embeddings_batch(doc_texts)
-                    await self.vector_store.add_documents(self.documents, embeddings)
                     
+                    await self.vector_store.add_documents(self.documents, embeddings)
                     logger.info("✅ FAISS vector store setup complete")
+                
                 except Exception as e:
                     logger.warning(f"⚠️ FAISS setup failed: {e}")
                     self.vector_store = None
@@ -906,8 +906,10 @@ class RAGSystem:
                     self.bm25_retriever = await asyncio.to_thread(BM25Retriever.from_documents, self.documents)
                     self.bm25_retriever.k = min(RERANK_TOP_K, len(self.documents))
                     logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
+                
                 except Exception as e:
                     logger.warning(f"⚠️ BM25 retriever setup failed: {e}")
+        
         except Exception as e:
             logger.error(f"❌ Retriever setup error: {e}")
 
@@ -919,6 +921,7 @@ class RAGSystem:
                 return [], []
             
             query_embedding = await get_query_embedding(query)
+            
             retrieval_results = []
             
             if self.vector_store:
@@ -956,6 +959,7 @@ class RAGSystem:
                     logger.warning(f"⚠️ Reranking failed: {e}")
             
             return final_docs[:top_k], final_scores[:top_k]
+        
         except Exception as e:
             logger.error(f"❌ Retrieval error: {e}")
             return self.documents[:top_k], [0.5] * min(len(self.documents), top_k)
@@ -963,18 +967,21 @@ class RAGSystem:
     async def _fallback_search(self, query: str, k: int) -> Tuple[List[Document], List[float]]:
         try:
             query_terms = set(query.lower().split())
-            doc_scores = []
             
+            doc_scores = []
             for doc in self.documents:
                 doc_terms = set(doc.page_content.lower().split())
                 overlap = len(query_terms.intersection(doc_terms))
                 score = overlap / max(len(query_terms), 1)
+                
                 if query.lower() in doc.page_content.lower():
                     score += 0.3
+                
                 doc_scores.append((doc, score))
             
             doc_scores.sort(key=lambda x: x[1], reverse=True)
             return [d for d, s in doc_scores[:k]], [s for d, s in doc_scores[:k]]
+        
         except Exception as e:
             logger.error(f"❌ Fallback search error: {e}")
             return self.documents[:k], [0.5] * min(len(self.documents), k)
@@ -990,11 +997,14 @@ class RAGSystem:
             
             pairs = [[query, doc.page_content[:512]] for doc in docs]
             rerank_scores = reranker.predict(pairs)
+            
             normalized_rerank = [(score + 1) / 2 for score in rerank_scores]
             combined_scores = [min(1.0, 0.7 * r + 0.3 * o) for r, o in zip(normalized_rerank, scores)]
             
             scored_docs = sorted(zip(docs, combined_scores), key=lambda x: x[1], reverse=True)
+            
             return [d for d, s in scored_docs[:top_k]], [s for d, s in scored_docs[:top_k]]
+        
         except Exception as e:
             logger.error(f"❌ Semantic reranking error: {e}")
             return docs[:top_k], scores[:top_k]
@@ -1009,14 +1019,14 @@ class RAGSystem:
             
             if not retrieved_docs:
                 return {"query": query, "answer": "No relevant documents found.", "confidence": 0.0,
-                       "domain": self.domain, "processing_time": time.time() - start_time}
+                        "domain": self.domain, "processing_time": time.time() - start_time}
             
             confidence = self._calculate_confidence(query, similarity_scores, retrieved_docs)
             
             if confidence < CONFIDENCE_THRESHOLD:
                 return {"query": query, "answer": "I don't have enough information to answer accurately.",
-                       "confidence": float(confidence), "domain": self.domain,
-                       "retrieved_chunks": len(retrieved_docs), "processing_time": time.time() - start_time}
+                        "confidence": float(confidence), "domain": self.domain,
+                        "retrieved_chunks": len(retrieved_docs), "processing_time": time.time() - start_time}
             
             context = self.token_processor.optimize_context(retrieved_docs, query)
             answer = await self._generate_response(query, context, self.domain, confidence)
@@ -1026,10 +1036,11 @@ class RAGSystem:
                 "domain": self.domain, "retrieved_chunks": len(retrieved_docs),
                 "processing_time": time.time() - start_time
             })
+        
         except Exception as e:
             logger.error(f"❌ Query processing error: {e}")
             return {"query": query, "answer": f"An error occurred: {sanitize_pii(str(e))}", "confidence": 0.0,
-                   "domain": self.domain, "processing_time": time.time() - start_time}
+                    "domain": self.domain, "processing_time": time.time() - start_time}
 
     def _calculate_confidence(self, query: str, scores: List[float], docs: List[Document]) -> float:
         if not scores:
@@ -1040,6 +1051,7 @@ class RAGSystem:
             max_score, avg_score = np.max(scores_array), np.mean(scores_array)
             score_std = np.std(scores_array) if len(scores_array) > 1 else 0.0
             score_consistency = max(0.0, 1.0 - score_std)
+            
             query_match = self._calculate_query_match(query, docs)
             
             confidence = 0.35 * max_score + 0.25 * avg_score + 0.25 * query_match + 0.15 * score_consistency
@@ -1048,6 +1060,7 @@ class RAGSystem:
                 confidence += 0.1
             
             return min(1.0, max(0.0, confidence))
+        
         except Exception as e:
             logger.warning(f"⚠️ Confidence calculation error: {e}")
             return 0.3
@@ -1061,8 +1074,10 @@ class RAGSystem:
         for doc in docs[:5]:
             doc_terms = set(doc.page_content.lower().split())
             match_score = len(query_terms.intersection(doc_terms)) / len(query_terms)
+            
             if query.lower() in doc.page_content.lower():
                 match_score += 0.2
+            
             match_scores.append(match_score)
         
         return np.mean(match_scores) if match_scores else 0.5
@@ -1074,31 +1089,23 @@ class RAGSystem:
                 return "System is initializing. Please try again."
             
             system_prompt = f"""You are an expert document analyst in {domain}. Answer based on the context. If not available, state it. Be concise. Confidence: {confidence:.1%}"""
+            
             user_message = f"Context:\n{context}\n\nQuestion: {query}\n\nAnswer based on the context:"
+            
             messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": user_message}]
             
-            # Use streaming for faster perceived response
             response = await asyncio.wait_for(
                 openai_client.chat.completions.create(
-                    messages=messages, 
-                    model="gpt-4o", 
-                    temperature=0.1, 
-                    max_tokens=800,  # Reduced from 1000 for faster response
-                    stream=True  # Enable streaming
+                    messages=messages, model="gpt-4o", temperature=0.1, max_tokens=1000
                 ), timeout=QUESTION_TIMEOUT
             )
             
-            # Collect streamed response
-            answer_parts = []
-            async for chunk in response:
-                if chunk.choices[0].delta.content:
-                    answer_parts.append(chunk.choices[0].delta.content)
-            
-            return "".join(answer_parts).strip()
+            return response.choices[0].message.content.strip()
         
         except asyncio.TimeoutError:
             logger.error(f"❌ Response generation timeout after {QUESTION_TIMEOUT}s")
             return "Response generation took too long. Please try a simpler question."
+        
         except Exception as e:
             logger.error(f"❌ Response generation error: {e}")
             return f"I encountered an error processing your query: {str(e)}"
@@ -1106,6 +1113,7 @@ class RAGSystem:
 # ================================
 # UTILITY FUNCTIONS
 # ================================
+
 def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], k_value: int = 60) -> List[Tuple[Document, float]]:
     if not results_list:
         return []
@@ -1115,14 +1123,17 @@ def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], k_v
     
     for i, results in enumerate(results_list):
         weight = weights.get("semantic" if i == 0 else "bm25", 1.0 / len(results_list))
+        
         for rank, (doc, score) in enumerate(results):
             doc_key = hashlib.md5(doc.page_content.encode()).hexdigest()
             doc_scores[doc_key] += weight / (k_value + rank + 1)
+            
             if doc_key not in seen_docs:
                 seen_docs[doc_key] = doc
     
     sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
     max_score = sorted_docs[0][1] if sorted_docs else 1.0
+    
     return [(seen_docs[key], score / max_score) for key, score in sorted_docs]
 
 async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
@@ -1134,6 +1145,7 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
     for i, text in enumerate(texts):
         text_hash = hashlib.md5(text.encode()).hexdigest()
         cached_embedding = CACHE_MANAGER.get_embedding(text_hash)
+        
         if cached_embedding is not None:
             results.append((i, cached_embedding))
         else:
@@ -1143,16 +1155,14 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
     if uncached_texts:
         try:
             await ensure_models_ready()
+            
             if base_sentence_model:
                 async def process_single_batch(batch_data):
                     batch_texts = [item[1] for item in batch_data]
                     batch_indices = [item[0] for item in batch_data]
                     
                     batch_embeddings = await asyncio.to_thread(
-                        base_sentence_model.encode, 
-                        batch_texts, 
-                        show_progress_bar=False, 
-                        convert_to_numpy=True
+                        base_sentence_model.encode, batch_texts, show_progress_bar=False, convert_to_numpy=True
                     )
                     
                     for text, embedding in zip(batch_texts, batch_embeddings):
@@ -1161,22 +1171,25 @@ async def get_embeddings_batch(texts: List[str]) -> List[np.ndarray]:
                     return list(zip(batch_indices, batch_embeddings))
                 
                 batches = [uncached_indices[i:i + OPTIMAL_BATCH_SIZE] for i in range(0, len(uncached_indices), OPTIMAL_BATCH_SIZE)]
+                
                 semaphore = asyncio.Semaphore(MAX_CONCURRENT_BATCHES)
                 
                 async def limited_process_batch(batch):
-                    async with semaphore:
-                        return await process_single_batch(batch)
+                    async with semaphore: return await process_single_batch(batch)
                 
                 logger.info(f"🚀 Processing {len(uncached_texts)} embeddings in {len(batches)} parallel batches")
+                
                 batch_results = await asyncio.gather(*[limited_process_batch(b) for b in batches])
                 
                 for batch_result in batch_results:
                     results.extend(batch_result)
                 
                 logger.info("✅ Completed parallel embedding processing")
+            
             else:
                 logger.warning("⚠️ No embedding model available, using zero vectors")
                 results.extend([(i, np.zeros(384)) for i, _ in uncached_indices])
+        
         except Exception as e:
             logger.error(f"❌ Parallel embedding error: {e}")
             results.extend([(i, np.zeros(384)) for i, _ in uncached_indices])
@@ -1190,11 +1203,13 @@ async def get_query_embedding(query: str) -> np.ndarray:
     
     query_hash = hashlib.md5(query.encode()).hexdigest()
     cached_embedding = CACHE_MANAGER.get_embedding(query_hash)
+    
     if cached_embedding is not None:
         return cached_embedding
     
     try:
         await ensure_models_ready()
+        
         if base_sentence_model:
             embedding = await asyncio.to_thread(base_sentence_model.encode, query, convert_to_numpy=True)
             CACHE_MANAGER.set_embedding(query_hash, embedding)
@@ -1202,23 +1217,24 @@ async def get_query_embedding(query: str) -> np.ndarray:
         
         logger.warning("⚠️ No embedding model available for query")
         return np.zeros(384)
+    
     except Exception as e:
         logger.error(f"❌ Query embedding error: {e}")
         return np.zeros(384)
 
 async def ensure_openai_ready():
     global openai_client
+    
     if openai_client is None:
         if not OPENAI_API_KEY:
             raise HTTPException(status_code=503, detail="OpenAI API key not configured")
         
         try:
             openai_client = AsyncOpenAI(
-                api_key=OPENAI_API_KEY,
-                timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
-                max_retries=3
+                api_key=OPENAI_API_KEY, timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0), max_retries=3
             )
             logger.info("✅ OpenAI client initialized")
+        
         except Exception as e:
             logger.error(f"❌ Failed to initialize OpenAI client: {e}")
             raise HTTPException(status_code=503, detail="OpenAI client not available")
@@ -1228,19 +1244,8 @@ async def ensure_models_ready():
     
     if base_sentence_model is None:
         try:
-            # GPU ACCELERATION: Enable GPU/MPS support for faster embeddings
-            device = 'cpu'
-            if torch.cuda.is_available():
-                device = 'cuda'
-                logger.info("🚀 CUDA available - using GPU for embeddings")
-            elif hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
-                device = 'mps'
-                logger.info("🚀 MPS available - using Apple Silicon GPU for embeddings")
-            else:
-                logger.info("💻 Using CPU for embeddings")
-            
-            base_sentence_model = SentenceTransformer(EMBEDDING_MODEL_NAME, device=device)
-            logger.info(f"✅ Sentence transformer loaded on {device}")
+            base_sentence_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
+            logger.info("✅ Sentence transformer loaded")
         except Exception as e:
             logger.warning(f"⚠️ Failed to load sentence transformer: {e}")
     
@@ -1256,6 +1261,7 @@ DOMAIN_DETECTOR = DomainDetector()
 # ================================
 # FASTAPI APPLICATION
 # ================================
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
@@ -1263,7 +1269,9 @@ async def lifespan(app: FastAPI):
     await ensure_openai_ready()
     await ensure_models_ready()
     logger.info("✅ System initialized")
+    
     yield
+    
     logger.info("🔄 Shutting down system...")
     CACHE_MANAGER.clear_all_caches()
     if openai_client and hasattr(openai_client, 'close'):
@@ -1276,16 +1284,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="HackRx RAG System", version="2.0.0", lifespan=lifespan)
 
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"]
+    CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"]
 )
 
 # ================================
 # API ENDPOINTS
 # ================================
+
 @app.get("/")
 async def root():
     return {"status": "online", "service": "HackRx RAG System", "version": "2.0.0", "timestamp": datetime.now().isoformat()}
@@ -1298,7 +1303,7 @@ async def get_cache_stats_endpoint():
 
 @app.post("/hackrx/run")
 async def hackrx_run_endpoint(request: Request):
-    """HackRx specific endpoint with persistent document caching - OPTIMIZED VERSION"""
+    """HackRx specific endpoint with persistent document caching - FIXED VERSION"""
     if not simple_auth_check(request):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
     
@@ -1319,10 +1324,9 @@ async def hackrx_run_endpoint(request: Request):
         rag_system = RAGSystem()
         
         try:
-            # Use the async version with await
+            # FIXED: Use the async version with await
             doc_state = await get_or_process_document_async(documents_url, rag_system)
             
-            # Process all questions
             answers = []
             for question in questions:
                 try:
@@ -1339,6 +1343,7 @@ async def hackrx_run_endpoint(request: Request):
     
     except HTTPException:
         raise
+    
     except Exception as e:
         logger.error(f"❌ HackRx endpoint error: {e}")
         raise HTTPException(status_code=500, detail=f"Processing failed: {sanitize_pii(str(e))}")
@@ -1346,6 +1351,7 @@ async def hackrx_run_endpoint(request: Request):
 # ================================
 # ERROR HANDLERS
 # ================================
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
@@ -1366,6 +1372,7 @@ async def general_exception_handler(request: Request, exc: Exception):
 # ================================
 # MAIN ENTRY POINT
 # ================================
+
 if __name__ == "__main__":
     import uvicorn
     port = int(os.getenv("PORT", 8000))
