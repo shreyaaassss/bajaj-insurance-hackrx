@@ -467,37 +467,55 @@ class UnifiedLoader:
         return source.startswith(('http://', 'https://', 'blob:', 'drive:', 'dropbox:'))
 
     async def _load_from_url(self, url: str) -> List[Document]:
-        """Enhanced URL loading with retry logic"""
+        """Enhanced URL loading with retry logic."""
         parsed = urlparse(url)
         scheme = parsed.scheme.lower()
 
-        if scheme in ['drive', 'dropbox']:
-            if scheme == 'drive':
-                url = url.replace('drive:', 'https://')
-            elif scheme == 'dropbox':
-                url = url.replace('dropbox:', 'https://')
+        # Normalize custom schemes (drive:, dropbox:)
+        if scheme in ["drive", "dropbox"]:
+            if scheme == "drive":
+                url = url.replace("drive:", "https://")
+            elif scheme == "dropbox":
+                url = url.replace("dropbox:", "https://")
 
+        # Validate scheme after normalization
         if not validate_url_scheme(url):
             raise ValueError(f"Unsupported URL scheme: {scheme}")
 
         download_url = self._transform_special_url(url)
-        
-        # Enhanced headers and retry logic
+
+        # Custom headers
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/117.0 Safari/537.36"
+            )
         }
-        
+
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                timeout = httpx.Timeout(connect=15.0, read=120.0)
+                timeout = httpx.Timeout(
+                    timeout=120.0,   # overall cap for the request
+                    connect=15.0,    # time to establish TCP connection
+                    read=120.0,      # time to read response body
+                    write=30.0,      # time to write request body (uploads)
+                    pool=5.0         # wait time for a connection from the pool
+                )
+
                 async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
                     response = await client.get(download_url, follow_redirects=True)
                     response.raise_for_status()
                     content = response.content
 
-                file_ext = self._get_extension_from_url(url) or self._detect_extension_from_content(content)
+                # Determine extension
+                file_ext = (
+                    self._get_extension_from_url(url)
+                    or self._detect_extension_from_content(content)
+                )
 
+                # Write content to a temporary file
                 with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
                     tmp_file.write(content)
                     temp_path = tmp_file.name
@@ -507,10 +525,11 @@ class UnifiedLoader:
                 finally:
                     if os.path.exists(temp_path):
                         os.unlink(temp_path)
-                        
-            except Exception as e:
+
+            except Exception:
                 if attempt == max_retries - 1:
                     raise
+                # Exponential back-off: 1s, 2s, 4s …
                 await asyncio.sleep(2 ** attempt)
 
     def _transform_special_url(self, url: str) -> str:
