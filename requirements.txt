@@ -34,12 +34,8 @@ tiktoken==0.6.0
 # Data validation
 pydantic==2.5.2
 
-# ADDED: Required for hackrx6.py caching system
+# REQUIRED: Caching system
 cachetools==5.3.2
 
-# Optional: Enhanced file type detection (already in your code)
+# REQUIRED: Enhanced file type detection
 python-magic==0.4.27
-
-# Optional: Keep these if you want to maintain compatibility
-# requests==2.31.0      # Only if needed elsewhere
-# psutil==5.9.6         # Only if you want system monitoring
