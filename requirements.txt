@@ -13,18 +13,18 @@ langchain-text-splitters==0.0.1
 PyMuPDF==1.26.3
 docx2txt==0.8
 
-# AI and embeddings - CORRECTED COMPATIBLE VERSIONS
+# AI and embeddings (Compatible versions)
 sentence-transformers==2.2.2
-transformers==4.21.3
-torch==1.13.1
+transformers==4.36.2
+# PyTorch will be installed separately in Dockerfile for CPU compatibility
 openai==1.12.0
-huggingface-hub==0.16.4
+huggingface-hub==0.19.4
 
 # Search and retrieval
 rank-bm25==0.2.2
 faiss-cpu==1.7.4
 
-# Core computation - DOWNGRADED FOR COMPATIBILITY
+# Core computation
 numpy==1.24.4
 scikit-learn==1.3.2
 
@@ -34,8 +34,11 @@ tiktoken==0.6.0
 # Data validation
 pydantic==2.5.2
 
-# Caching system
+# REQUIRED: Caching system
 cachetools==5.3.2
 
-# File type detection
+# REQUIRED: Enhanced file type detection
 python-magic==0.4.27
+
+# Additional dependencies for compatibility
+psutil==5.9.6
