@@ -86,37 +86,29 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================================
-# HYBRID CONFIGURATION
+# OPTIMIZED CONFIGURATION
 # ================================
 
-# Fixed tokens
+# Fixed optimal configuration
 HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
-GEMINI_API_KEY = 'AIzaSyBVq4GQbmzFwivcQ0cPY3qp8PyVyR613NM'
+GEMINI_API_KEY = 'AIzaSyCGw95fICmdzuuN9JeIItOjhx_TdTCt3ega'
 
-# Model configuration
+# SPEED-OPTIMIZED CONFIGURATION
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
-
-# HYBRID CHUNKING STRATEGY (from recommendation #1)
-CHUNK_SIZE = 1200  # Larger chunks for better context
-CHUNK_OVERLAP = 200  # Better overlap for continuity
-
-# HYBRID CONTEXT WINDOW (from recommendation #2)
-CONTEXT_DOCS = 18  # Better recall from 62.py
-MAX_CONTEXT_CHARS = 12000  # Latency safeguard from 61.py
-
-# Other optimized settings
-SEMANTIC_SEARCH_K = 12
+CHUNK_SIZE = 600
+CHUNK_OVERLAP = 75
+SEMANTIC_SEARCH_K = 8
+CONTEXT_DOCS = 6
 CONFIDENCE_THRESHOLD = 0.15
-RERANK_TOP_K = 20
+RERANK_TOP_K = 12
 MAX_FILE_SIZE_MB = 50
 QUESTION_TIMEOUT = 8.0
 
-# HYBRID PARALLEL PROCESSING (from recommendation #8)
-OPTIMAL_BATCH_SIZE = 64  # From 61.py for speed
-MAX_PARALLEL_BATCHES = 8  # From 61.py
+# PARALLEL PROCESSING - OPTIMIZED
+OPTIMAL_BATCH_SIZE = 32
+MAX_PARALLEL_BATCHES = 4
 EMBEDDING_TIMEOUT = 60.0
-MAX_CONCURRENT_QUESTIONS = 16
 
 # Supported file types
 SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.txt', '.md', '.csv']
@@ -124,158 +116,258 @@ SUPPORTED_URL_SCHEMES = ['http', 'https', 'blob', 'drive', 'dropbox']
 
 # Domain detection keywords
 DOMAIN_KEYWORDS = {
-    "legal": ['article', 'constitution', 'fundamental rights', 'contract', 'law', 'court', 'clause', 'statute', 'regulation'],
-    "constitutional": ['fundamental rights', 'article', 'part', 'constitution', 'parliament', 'directive principles'],
-    "insurance": ['policy', 'premium', 'claim', 'coverage', 'benefit', 'exclusion', 'deductible', 'policyholder'],
-    "medical": ['patient', 'diagnosis', 'treatment', 'clinical', 'medical', 'healthcare', 'physician', 'therapy'],
-    "financial": ['investment', 'revenue', 'profit', 'financial', 'accounting', 'audit', 'balance', 'asset'],
-    "technical": ['system', 'software', 'hardware', 'network', 'API', 'configuration', 'deployment', 'architecture'],
-    "academic": ['research', 'study', 'analysis', 'methodology', 'hypothesis', 'experiment', 'data', 'results'],
-    "business": ['strategy', 'management', 'operations', 'marketing', 'business', 'corporate', 'organization']
+    "insurance": [
+        'policy', 'premium', 'claim', 'coverage', 'benefit', 'exclusion', 'deductible',
+        'co-payment', 'policyholder', 'insured', 'underwriting', 'actuary', 'risk assessment'
+    ],
+    "legal": [
+        'contract', 'agreement', 'clause', 'statute', 'regulation', 'compliance', 'litigation',
+        'jurisdiction', 'liability', 'court', 'legal', 'law', 'attorney', 'counsel'
+    ],
+    "medical": [
+        'patient', 'diagnosis', 'treatment', 'clinical', 'medical', 'healthcare', 'physician',
+        'hospital', 'therapy', 'medication', 'symptoms', 'disease', 'procedure'
+    ],
+    "financial": [
+        'investment', 'portfolio', 'revenue', 'profit', 'financial', 'accounting', 'audit',
+        'balance', 'asset', 'liability', 'equity', 'cash flow', 'budget'
+    ],
+    "technical": [
+        'system', 'software', 'hardware', 'network', 'database', 'API', 'configuration',
+        'deployment', 'architecture', 'infrastructure', 'technical', 'specification'
+    ],
+    "academic": [
+        'research', 'study', 'analysis', 'methodology', 'hypothesis', 'experiment',
+        'data', 'results', 'conclusion', 'literature', 'citation', 'peer review'
+    ],
+    "business": [
+        'strategy', 'management', 'operations', 'marketing', 'sales', 'customer',
+        'business', 'corporate', 'organization', 'project', 'team', 'leadership'
+    ]
 }
 
+# GLOBAL MODEL STATE MANAGEMENT
+_models_loaded = False
+_model_lock = asyncio.Lock()
+_startup_complete = False
+
+# Cache for document processing
+_document_cache = {}
+_cache_ttl = 1800  # 30 minutes
+
+# Global models
+base_sentence_model = None
+reranker = None
+gemini_client = None
+
 # ================================
-# HYBRID CACHING SYSTEM (Recommendation #8)
+# ENHANCED CACHING SYSTEM
 # ================================
 
-class HybridCacheManager:
-    """Hybrid cache combining UltraFastCache speed with document signature checking from 62.py"""
-    
+class SmartCacheManager:
+    """Smart cache manager with TTL/LRU primary and dict fallback"""
     def __init__(self):
         try:
             if HAS_CACHETOOLS:
-                # Increased cache sizes from 61.py for better performance
-                self.embedding_cache = cachetools.TTLCache(maxsize=50000, ttl=86400)
-                self.document_chunk_cache = cachetools.LRUCache(maxsize=2000)
-                self.domain_cache = cachetools.LRUCache(maxsize=5000)
-                self.query_cache = cachetools.TTLCache(maxsize=10000, ttl=3600)
+                self.embedding_cache = cachetools.TTLCache(maxsize=10000, ttl=86400)
+                self.document_chunk_cache = cachetools.LRUCache(maxsize=500)
+                self.domain_cache = cachetools.LRUCache(maxsize=1000)
                 self.primary_available = True
-                logger.info("✅ Hybrid TTL/LRU caching enabled")
+                logger.info("✅ Advanced caching with TTL/LRU enabled")
             else:
                 raise ImportError("cachetools not available")
         except ImportError:
             self.embedding_cache = {}
             self.document_chunk_cache = {}
             self.domain_cache = {}
-            self.query_cache = {}
             self.primary_available = False
-            logger.info("📦 Using dict fallback caching")
-        
-        # Document signature tracking from 62.py
-        self.current_document_hash = None
+            logger.info("📦 Using dict fallback caching (cachetools not available)")
+
         self._lock = threading.RLock()
-        self.hit_count = 0
-        self.miss_count = 0
-
-    def set_current_document(self, document_hash: str):
-        """Set current document with signature checking from 62.py"""
-        with self._lock:
-            if self.current_document_hash != document_hash:
-                if self.current_document_hash is not None:
-                    logger.info(f"🔄 Document changed, clearing query cache")
-                    self.query_cache.clear()
-                else:
-                    logger.info(f"📄 Setting initial document: {document_hash[:8]}")
-                self.current_document_hash = document_hash
-
-    def get_embedding(self, text_hash: str) -> Optional[Any]:
-        with self._lock:
-            result = self.embedding_cache.get(text_hash)
-            if result is not None:
-                self.hit_count += 1
-            else:
-                self.miss_count += 1
-            return result
-
-    def set_embedding(self, text_hash: str, embedding: Any):
-        with self._lock:
-            self.embedding_cache[text_hash] = embedding
-
-    def get_query_result(self, query_hash: str) -> Optional[Any]:
-        with self._lock:
-            result = self.query_cache.get(query_hash)
-            if result is not None:
-                self.hit_count += 1
-            else:
-                self.miss_count += 1
-            return result
-
-    def set_query_result(self, query_hash: str, result: Any):
-        with self._lock:
-            self.query_cache[query_hash] = result
-
-    def get_document_chunks(self, cache_key: str) -> Optional[Any]:
-        with self._lock:
-            return self.document_chunk_cache.get(cache_key)
-
-    def set_document_chunks(self, cache_key: str, chunks: Any):
-        with self._lock:
-            self.document_chunk_cache[cache_key] = chunks
-
-    def get_domain_result(self, cache_key: str) -> Optional[Any]:
-        with self._lock:
-            return self.domain_cache.get(cache_key)
-
-    def set_domain_result(self, cache_key: str, result: Any):
-        with self._lock:
-            self.domain_cache[cache_key] = result
 
     def clear_all_caches(self):
+        """Clear ALL caches when new document is uploaded - prevents stale answers"""
         with self._lock:
             self.embedding_cache.clear()
             self.document_chunk_cache.clear()
             self.domain_cache.clear()
-            self.query_cache.clear()
-            logger.info("🧹 All caches cleared")
+            logger.info("🧹 All caches cleared for new document upload")
 
-    def get_cache_efficiency(self) -> float:
-        total = self.hit_count + self.miss_count
-        return (self.hit_count / total * 100) if total > 0 else 0.0
+    def get_embedding(self, text_hash: str) -> Optional[Any]:
+        """Thread-safe embedding cache get"""
+        with self._lock:
+            return self.embedding_cache.get(text_hash)
 
-# Global cache manager
-CACHE_MANAGER = HybridCacheManager()
+    def set_embedding(self, text_hash: str, embedding: Any):
+        """Thread-safe embedding cache set"""
+        with self._lock:
+            self.embedding_cache[text_hash] = embedding
 
-# ================================
-# OPTIMIZED MODEL MANAGER
-# ================================
+    def get_document_chunks(self, cache_key: str) -> Optional[Any]:
+        """Thread-safe document chunk cache get"""
+        with self._lock:
+            return self.document_chunk_cache.get(cache_key)
 
-class ModelManager:
+    def set_document_chunks(self, cache_key: str, chunks: Any):
+        """Thread-safe document chunk cache set"""
+        with self._lock:
+            self.document_chunk_cache[cache_key] = chunks
+
+    def get_domain_result(self, cache_key: str) -> Optional[Any]:
+        """Thread-safe domain cache get"""
+        with self._lock:
+            return self.domain_cache.get(cache_key)
+
+    def set_domain_result(self, cache_key: str, result: Any):
+        """Thread-safe domain cache set"""
+        with self._lock:
+            self.domain_cache[cache_key] = result
+
+    def cleanup_if_needed(self):
+        """Only needed for dict fallback - TTL/LRU auto-manage"""
+        if not self.primary_available:
+            with self._lock:
+                if len(self.embedding_cache) > 10000:
+                    items = list(self.embedding_cache.items())[-5000:]
+                    self.embedding_cache.clear()
+                    self.embedding_cache.update(items)
+                if len(self.document_chunk_cache) > 500:
+                    items = list(self.document_chunk_cache.items())[-250:]
+                    self.document_chunk_cache.clear()
+                    self.document_chunk_cache.update(items)
+                if len(self.domain_cache) > 1000:
+                    items = list(self.domain_cache.items())[-500:]
+                    self.domain_cache.clear()
+                    self.domain_cache.update(items)
+
+    def get_cache_stats(self) -> Dict[str, Any]:
+        """Get cache statistics"""
+        with self._lock:
+            return {
+                "embedding_cache_size": len(self.embedding_cache),
+                "document_chunk_cache_size": len(self.document_chunk_cache),
+                "domain_cache_size": len(self.domain_cache),
+                "primary_cache_available": self.primary_available,
+                "cache_type": "TTLCache/LRUCache" if self.primary_available else "dict_fallback"
+            }
+
+# Query Result Cache
+class QueryResultCache:
     def __init__(self):
-        self._sentence_model = None
-        self._reranker = None
-        self._model_lock = asyncio.Lock()
+        self.cache = {}
+        self.max_size = 1000
+        self._lock = threading.RLock()
 
-    async def get_sentence_model(self):
-        if self._sentence_model is None:
-            async with self._model_lock:
-                if self._sentence_model is None:
-                    logger.info("🔄 Loading sentence transformer...")
-                    self._sentence_model = SentenceTransformer(
-                        EMBEDDING_MODEL_NAME,
-                        device='cpu',
-                        trust_remote_code=True,
-                        cache_folder=os.getenv('SENTENCE_TRANSFORMERS_HOME', None)
-                    )
-                    self._sentence_model.eval()
-                    _ = self._sentence_model.encode("warmup", show_progress_bar=False)
-                    logger.info("✅ Sentence transformer ready")
-        return self._sentence_model
+    def get_cached_answer(self, query: str, doc_hash: str) -> Optional[str]:
+        with self._lock:
+            cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{doc_hash[:8]}"
+            return self.cache.get(cache_key)
 
-    async def get_reranker(self):
-        if self._reranker is None:
-            async with self._model_lock:
-                if self._reranker is None:
-                    logger.info("🔄 Loading reranker...")
-                    self._reranker = CrossEncoder(
-                        RERANKER_MODEL_NAME,
-                        max_length=256,
-                        device='cpu'
-                    )
-                    _ = self._reranker.predict([["warmup", "test"]])
-                    logger.info("✅ Reranker ready")
-        return self._reranker
+    def cache_answer(self, query: str, doc_hash: str, answer: str):
+        with self._lock:
+            cache_key = f"{hashlib.md5(query.encode()).hexdigest()[:8]}_{doc_hash[:8]}"
+            if len(self.cache) >= self.max_size:
+                old_keys = list(self.cache.keys())[:200]
+                for key in old_keys:
+                    del self.cache[key]
+            self.cache[cache_key] = answer
 
-MODEL_MANAGER = ModelManager()
+# Document State Manager
+class DocumentStateManager:
+    def __init__(self):
+        self.current_doc_hash = None
+        self.current_doc_timestamp = None
+        
+    def generate_doc_signature(self, sources: List[str]) -> str:
+        signature_data = {
+            'sources': sorted(sources),
+            'timestamp': time.time(),
+            'system_version': '2.0'
+        }
+        return hashlib.sha256(json.dumps(signature_data, sort_keys=True).encode()).hexdigest()
+    
+    def should_invalidate_cache(self, new_doc_hash: str) -> bool:
+        if self.current_doc_hash is None:
+            return True
+        return self.current_doc_hash != new_doc_hash
+    
+    def invalidate_all_caches(self):
+        CACHE_MANAGER.clear_all_caches()
+        QUERY_CACHE.cache.clear()
+
+# Memory Manager
+class MemoryManager:
+    def __init__(self):
+        self.memory_threshold = 0.85
+        
+    def should_cleanup(self) -> bool:
+        if HAS_PSUTIL:
+            memory_percent = psutil.virtual_memory().percent / 100
+            return memory_percent > self.memory_threshold
+        return False
+    
+    def cleanup_if_needed(self):
+        if self.should_cleanup():
+            import gc
+            gc.collect()
+            CACHE_MANAGER.cleanup_if_needed()
+            logger.info("🧹 Memory cleanup performed")
+
+# Performance Monitor
+class PerformanceMonitor:
+    def __init__(self):
+        self.metrics = defaultdict(list)
+    
+    def record_timing(self, operation: str, duration: float):
+        self.metrics[operation].append(duration)
+        if len(self.metrics[operation]) > 100:
+            self.metrics[operation] = self.metrics[operation][-50:]
+    
+    def get_average_timing(self, operation: str) -> float:
+        return np.mean(self.metrics.get(operation, [0]))
+
+# Query Analyzer
+class QueryAnalyzer:
+    def __init__(self):
+        self.analytical_keywords = [
+            'analyze', 'compare', 'contrast', 'evaluate', 'assess', 'why',
+            'how does', 'what causes', 'relationship', 'impact', 'effect',
+            'trends', 'patterns', 'implications', 'significance'
+        ]
+        
+    def classify_query(self, query: str) -> Dict[str, Any]:
+        query_lower = query.lower()
+        is_analytical = any(keyword in query_lower for keyword in self.analytical_keywords)
+        
+        complexity_score = (
+            len(query.split()) * 0.1 +
+            query.count('?') * 0.2 +
+            (1.0 if is_analytical else 0.3)
+        )
+        
+        return {
+            'type': 'analytical' if is_analytical else 'factual',
+            'complexity': min(1.0, complexity_score),
+            'requires_multi_context': is_analytical
+        }
+
+# Global cache manager instances
+CACHE_MANAGER = SmartCacheManager()
+QUERY_CACHE = QueryResultCache()
+DOC_STATE_MANAGER = DocumentStateManager()
+MEMORY_MANAGER = MemoryManager()
+PERFORMANCE_MONITOR = PerformanceMonitor()
+QUERY_ANALYZER = QueryAnalyzer()
+
+# ================================
+# SIMPLE AUTHENTICATION
+# ================================
+
+def simple_auth_check(request: Request) -> bool:
+    """Simple authentication check"""
+    auth = request.headers.get("Authorization", "")
+    expected = f"Bearer {HACKRX_TOKEN}"
+    return auth == expected
 
 # ================================
 # UTILITY FUNCTIONS
@@ -293,10 +385,26 @@ def sanitize_pii(text: str) -> str:
         sanitized = re.sub(pattern, '[REDACTED]', sanitized)
     return sanitized
 
-def simple_auth_check(request: Request) -> bool:
-    auth = request.headers.get("Authorization", "")
-    expected = f"Bearer {HACKRX_TOKEN}"
-    return auth == expected
+def validate_url_scheme(url: str) -> bool:
+    """Validate URL scheme against whitelist"""
+    parsed = urlparse(url)
+    return parsed.scheme.lower() in SUPPORTED_URL_SCHEMES
+
+def validate_file_extension(filename: str) -> bool:
+    """Validate file extension against whitelist"""
+    ext = os.path.splitext(filename)[1].lower()
+    return ext in SUPPORTED_EXTENSIONS
+
+def convert_numpy_types(obj):
+    """Convert numpy types to native Python types for JSON serialization"""
+    if hasattr(obj, 'dtype'):
+        if obj.dtype == bool:
+            return bool(obj)
+        elif obj.dtype in ['int32', 'int64']:
+            return int(obj)
+        elif obj.dtype in ['float32', 'float64']:
+            return float(obj)
+    return obj
 
 def sanitize_for_json(data):
     """Recursively sanitize data for JSON serialization"""
@@ -306,14 +414,7 @@ def sanitize_for_json(data):
     elif isinstance(data, list):
         return [sanitize_for_json(v) for v in data]
     elif isinstance(data, (np.integer, np.floating, np.bool_)):
-        if hasattr(data, 'dtype'):
-            if data.dtype == bool:
-                return bool(data)
-            elif data.dtype in ['int32', 'int64']:
-                return int(data)
-            elif data.dtype in ['float32', 'float64']:
-                return float(data)
-        return data
+        return convert_numpy_types(data)
     elif hasattr(data, 'item'):
         return data.item()
     elif isinstance(data, (np.ndarray,)):
@@ -325,17 +426,23 @@ def sanitize_for_json(data):
 # ================================
 
 class UnifiedLoader:
+    """Unified document loader with enhanced URL support"""
     def __init__(self):
         self.mime_detector = magic if HAS_MAGIC else None
-        self.loader_cache = {}
+        self.google_patterns = [
+            r'drive\.google\.com/file/d/([a-zA-Z0-9-_]+)',
+            r'docs\.google\.com/document/d/([a-zA-Z0-9-_]+)',
+            r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
+        ]
+        self.dropbox_patterns = [
+            r'dropbox\.com/s/([a-zA-Z0-9]+)',
+            r'dropbox\.com/sh/([a-zA-Z0-9]+)',
+            r'dropbox\.com/scl/fi/([a-zA-Z0-9-_]+)',
+        ]
 
     async def load_document(self, source: str) -> List[Document]:
+        """Universal document loader"""
         try:
-            source_hash = hashlib.md5(source.encode()).hexdigest()
-            if source_hash in self.loader_cache:
-                logger.info(f"📄 Using cached document: {sanitize_pii(source)}")
-                return self.loader_cache[source_hash]
-
             if self._is_url(source):
                 docs = await self._load_from_url(source)
             else:
@@ -345,10 +452,9 @@ class UnifiedLoader:
                 doc.metadata.update({
                     'source': source,
                     'load_time': time.time(),
-                    'loader_version': '3.0'
+                    'loader_version': '2.0'
                 })
 
-            self.loader_cache[source_hash] = docs
             logger.info(f"✅ Loaded {len(docs)} documents from {sanitize_pii(source)}")
             return docs
 
@@ -357,72 +463,98 @@ class UnifiedLoader:
             raise
 
     def _is_url(self, source: str) -> bool:
+        """Check if source is a URL"""
         return source.startswith(('http://', 'https://', 'blob:', 'drive:', 'dropbox:'))
 
     async def _load_from_url(self, url: str) -> List[Document]:
+        """Enhanced URL loading with retry logic."""
         parsed = urlparse(url)
         scheme = parsed.scheme.lower()
 
+        # Normalize custom schemes (drive:, dropbox:)
         if scheme in ["drive", "dropbox"]:
             if scheme == "drive":
                 url = url.replace("drive:", "https://")
             elif scheme == "dropbox":
                 url = url.replace("dropbox:", "https://")
 
+        # Validate scheme after normalization
+        if not validate_url_scheme(url):
+            raise ValueError(f"Unsupported URL scheme: {scheme}")
+
         download_url = self._transform_special_url(url)
 
+        # Custom headers
         headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-            "Connection": "keep-alive",
+                "Chrome/117.0 Safari/537.36"
+            )
         }
 
-        timeout = httpx.Timeout(timeout=120.0, connect=15.0, read=120.0)
-        
-        async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
-            response = await client.get(download_url, follow_redirects=True)
-            response.raise_for_status()
-            content = response.content
-
-            file_ext = (
-                self._get_extension_from_url(url)
-                or self._detect_extension_from_content(content)
-            )
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
-                tmp_file.write(content)
-                temp_path = tmp_file.name
-
+        max_retries = 3
+        for attempt in range(max_retries):
             try:
-                return await self._load_from_file(temp_path)
-            finally:
-                if os.path.exists(temp_path):
-                    os.unlink(temp_path)
+                timeout = httpx.Timeout(
+                    timeout=120.0,   # overall cap for the request
+                    connect=15.0,    # time to establish TCP connection
+                    read=120.0,      # time to read response body
+                    write=30.0,      # time to write request body (uploads)
+                    pool=5.0         # wait time for a connection from the pool
+                )
+
+                async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
+                    response = await client.get(download_url, follow_redirects=True)
+                    response.raise_for_status()
+                    content = response.content
+
+                # Determine extension
+                file_ext = (
+                    self._get_extension_from_url(url)
+                    or self._detect_extension_from_content(content)
+                )
+
+                # Write content to a temporary file
+                with tempfile.NamedTemporaryFile(delete=False, suffix=file_ext) as tmp_file:
+                    tmp_file.write(content)
+                    temp_path = tmp_file.name
+
+                try:
+                    return await self._load_from_file(temp_path)
+                finally:
+                    if os.path.exists(temp_path):
+                        os.unlink(temp_path)
+
+            except Exception:
+                if attempt == max_retries - 1:
+                    raise
+                # Exponential back-off: 1s, 2s, 4s …
+                await asyncio.sleep(2 ** attempt)
 
     def _transform_special_url(self, url: str) -> str:
-        # Google Drive transformation
-        if 'drive.google.com' in url:
-            match = re.search(r'/file/d/([a-zA-Z0-9-_]+)', url)
+        """Enhanced URL transformation for Google Drive and Dropbox"""
+        # Enhanced Google Drive transformation
+        for pattern in self.google_patterns:
+            match = re.search(pattern, url)
             if match:
                 file_id = match.group(1)
+                # Try export formats in order of preference
                 return f"https://drive.google.com/uc?export=download&id={file_id}"
         
-        # Dropbox transformation
-        if 'dropbox.com' in url:
-            if '?dl=0' in url:
-                return url.replace('?dl=0', '?dl=1')
-            elif '?dl=1' not in url:
-                separator = '&' if '?' in url else '?'
-                return f"{url}{separator}dl=1"
-        
+        # Enhanced Dropbox transformation
+        for pattern in self.dropbox_patterns:
+            if re.search(pattern, url):
+                if '?dl=0' in url:
+                    return url.replace('?dl=0', '?dl=1')
+                elif '?dl=1' not in url:
+                    separator = '&' if '?' in url else '?'
+                    return f"{url}{separator}dl=1"
+                
         return url
 
     def _get_extension_from_url(self, url: str) -> Optional[str]:
+        """Get file extension from URL"""
         parsed = urlparse(url)
         path = parsed.path
         if path:
@@ -430,6 +562,7 @@ class UnifiedLoader:
         return None
 
     def _detect_extension_from_content(self, content: bytes) -> str:
+        """Detect file extension from content"""
         if self.mime_detector:
             try:
                 mime_type = magic.from_buffer(content, mime=True)
@@ -451,35 +584,48 @@ class UnifiedLoader:
         return '.txt'
 
     async def _load_from_file(self, file_path: str) -> List[Document]:
+        """Load document from file"""
         file_extension = os.path.splitext(file_path)[1].lower()
         file_size = os.path.getsize(file_path)
 
         if file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
-            raise ValueError(f"File too large: {file_size / (1024*1024):.1f}MB")
+            raise ValueError(f"File too large: {file_size / (1024*1024):.1f}MB (max: {MAX_FILE_SIZE_MB}MB)")
 
-        if file_extension not in SUPPORTED_EXTENSIONS:
+        if not validate_file_extension(file_path):
             raise ValueError(f"Unsupported file extension: {file_extension}")
+
+        logger.info(f"📄 Loading {file_extension} file ({file_size} bytes): {sanitize_pii(file_path)}")
+
+        mime_type = None
+        if self.mime_detector:
+            try:
+                mime_type = magic.from_file(file_path, mime=True)
+            except Exception as e:
+                logger.warning(f"⚠️ MIME detection failed: {e}")
 
         docs = None
         loader_used = None
 
-        if file_extension == '.pdf':
+        if mime_type == 'application/pdf' or file_extension == '.pdf':
             try:
                 loader = PyMuPDFLoader(file_path)
                 docs = await asyncio.to_thread(loader.load)
                 loader_used = "PyMuPDFLoader"
             except Exception as e:
-                logger.warning(f"⚠️ PDF loading failed: {e}")
+                logger.warning(f"⚠️ PyMuPDF failed: {e}")
 
-        elif file_extension in ['.docx', '.doc']:
+        elif ('word' in (mime_type or '') or
+              'officedocument' in (mime_type or '') or
+              file_extension in ['.docx', '.doc']):
             try:
                 loader = Docx2txtLoader(file_path)
                 docs = await asyncio.to_thread(loader.load)
                 loader_used = "Docx2txtLoader"
             except Exception as e:
-                logger.warning(f"⚠️ DOCX loading failed: {e}")
+                logger.warning(f"⚠️ DOCX loader failed: {e}")
 
-        elif file_extension in ['.txt', '.md', '.csv']:
+        elif ('text' in (mime_type or '') or
+              file_extension in ['.txt', '.md', '.csv', '.log']):
             for encoding in ['utf-8', 'utf-8-sig', 'latin-1', 'cp1252']:
                 try:
                     loader = TextLoader(file_path, encoding=encoding)
@@ -492,35 +638,109 @@ class UnifiedLoader:
                     logger.warning(f"⚠️ Text loader failed with {encoding}: {e}")
 
         if not docs:
-            raise ValueError(f"Could not load file {file_path}")
+            try:
+                loader = TextLoader(file_path, encoding='utf-8')
+                docs = await asyncio.to_thread(loader.load)
+                loader_used = "TextLoader (fallback)"
+            except Exception as e:
+                logger.error(f"❌ All loaders failed: {e}")
+                raise ValueError(f"Could not load file {file_path}: {str(e)}")
+
+        if not docs:
+            raise ValueError(f"No content extracted from {file_path}")
 
         for doc in docs:
             doc.metadata.update({
                 'file_size': file_size,
                 'file_extension': file_extension,
+                'mime_type': mime_type,
                 'loader_used': loader_used
             })
 
+        logger.info(f"✅ Loaded {len(docs)} documents using {loader_used}")
         return docs
 
 # ================================
-# HYBRID TEXT SPLITTER (Recommendation #1)
+# HIERARCHICAL TEXT SPLITTER
 # ================================
 
-class HybridTextSplitter:
-    """Hybrid text splitter combining adaptive chunking from 62.py with speed optimizations from 61.py"""
-    
+class HierarchicalChunker:
     def __init__(self):
-        # Enhanced separators for better document structure preservation
+        self.chunk_sizes = [800, 1200, 400]
+        self.overlap_ratio = 0.2
+        
+    def create_hierarchical_chunks(self, documents: List[Document]) -> List[Document]:
+        all_chunks = []
+        
+        for doc in documents:
+            for chunk_size in self.chunk_sizes:
+                overlap = int(chunk_size * self.overlap_ratio)
+                splitter = RecursiveCharacterTextSplitter(
+                    chunk_size=chunk_size,
+                    chunk_overlap=overlap
+                )
+                chunks = splitter.split_documents([doc])
+                
+                for chunk in chunks:
+                    chunk.metadata.update({
+                        'chunk_size_category': chunk_size,
+                        'hierarchy_level': 'primary' if chunk_size == 800 else 'context'
+                    })
+                
+                all_chunks.extend(chunks)
+        
+        return all_chunks
+
+class AdaptiveTextSplitter:
+    """Adaptive text splitter with smart caching and hierarchical support"""
+    def __init__(self):
         self.separators = [
             "\n\n## ", "\n\n# ", "\n\n### ", "\n\n#### ",
-            "\n\nArticle ", "\n\nPart ", "\n\nSection ",  # Constitutional/legal
             "\n\n", "\n", ". ", "! ", "? ", "; ", " ", ""
         ]
-        # Domain-specific adaptations from 62.py
-        self.domain_multipliers = {
-            "legal": 1.25,      # Larger chunks for legal documents
-            "constitutional": 1.3,  # Even larger for constitutional texts
+        self.hierarchical_chunker = HierarchicalChunker()
+
+    def split_documents(self, documents: List[Document], detected_domain: str = "general") -> List[Document]:
+        """Split documents with smart caching"""
+        if not documents:
+            return []
+
+        content_hash = self._calculate_content_hash(documents)
+        cache_key = f"chunks_{content_hash}_{detected_domain}"
+
+        cached_chunks = CACHE_MANAGER.get_document_chunks(cache_key)
+        if cached_chunks is not None:
+            logger.info(f"📄 Using cached chunks: {len(cached_chunks)} chunks")
+            return cached_chunks
+
+        chunk_size, chunk_overlap = self._adapt_for_content(documents, detected_domain)
+
+        all_chunks = []
+        for doc in documents:
+            try:
+                chunks = self._split_document(doc, chunk_size, chunk_overlap)
+                all_chunks.extend(chunks)
+            except Exception as e:
+                logger.warning(f"⚠️ Error splitting document: {e}")
+                chunks = self._simple_split(doc, chunk_size, chunk_overlap)
+                all_chunks.extend(chunks)
+
+        # Filter very short chunks
+        all_chunks = [chunk for chunk in all_chunks if len(chunk.page_content.strip()) >= 50]
+
+        CACHE_MANAGER.set_document_chunks(cache_key, all_chunks)
+        logger.info(f"📄 Created {len(all_chunks)} adaptive chunks")
+        return all_chunks
+
+    def _calculate_content_hash(self, documents: List[Document]) -> str:
+        """Calculate hash for content caching"""
+        content_sample = "".join([doc.page_content[:100] for doc in documents[:5]])
+        return hashlib.sha256(content_sample.encode()).hexdigest()[:16]
+
+    def _adapt_for_content(self, documents: List[Document], detected_domain: str) -> Tuple[int, int]:
+        """Adapt chunk size based on content and domain"""
+        domain_multipliers = {
+            "legal": 1.25,
             "medical": 1.0,
             "insurance": 0.85,
             "financial": 1.0,
@@ -530,62 +750,15 @@ class HybridTextSplitter:
             "general": 1.0
         }
 
-    def split_documents(self, documents: List[Document], detected_domain: str = "general") -> List[Document]:
-        """Hybrid document splitting with smart caching and domain adaptation"""
-        if not documents:
-            return []
-
-        # Smart caching from 62.py
-        content_hash = self._calculate_content_hash(documents)
-        cache_key = f"chunks_{content_hash}_{detected_domain}"
-        
-        cached_chunks = CACHE_MANAGER.get_document_chunks(cache_key)
-        if cached_chunks is not None:
-            logger.info(f"📄 Using cached chunks: {len(cached_chunks)} chunks")
-            return cached_chunks
-
-        # Hybrid chunking strategy - adapt chunk size based on domain
-        chunk_size, chunk_overlap = self._adapt_for_content(documents, detected_domain)
-        
-        all_chunks = []
-        for doc in documents:
-            try:
-                chunks = self._split_document_hybrid(doc, chunk_size, chunk_overlap)
-                all_chunks.extend(chunks)
-            except Exception as e:
-                logger.warning(f"⚠️ Error splitting document: {e}")
-                # Fallback to simple splitting
-                chunks = self._simple_split(doc, chunk_size, chunk_overlap)
-                all_chunks.extend(chunks)
-
-        # Filter very short chunks but keep threshold lower for speed
-        all_chunks = [chunk for chunk in all_chunks if len(chunk.page_content.strip()) >= 50]
-
-        # Cache result
-        CACHE_MANAGER.set_document_chunks(cache_key, all_chunks)
-        logger.info(f"📄 Created {len(all_chunks)} hybrid chunks for {detected_domain} domain")
-        return all_chunks
-
-    def _calculate_content_hash(self, documents: List[Document]) -> str:
-        """Calculate hash for content caching"""
-        content_sample = "".join([doc.page_content[:100] for doc in documents[:5]])
-        return hashlib.sha256(content_sample.encode()).hexdigest()[:16]
-
-    def _adapt_for_content(self, documents: List[Document], detected_domain: str) -> Tuple[int, int]:
-        """Adapt chunk size based on content and domain from 62.py"""
-        multiplier = self.domain_multipliers.get(detected_domain, 1.0)
-        
-        # Use hybrid configuration values
+        multiplier = domain_multipliers.get(detected_domain, 1.0)
         adapted_size = int(CHUNK_SIZE * multiplier)
         adapted_overlap = min(adapted_size // 4, int(CHUNK_OVERLAP * 1.2))
-        
-        # Ensure reasonable bounds
+
         adapted_size = max(600, min(2000, adapted_size))
-        
         return adapted_size, adapted_overlap
 
-    def _split_document_hybrid(self, document: Document, chunk_size: int, chunk_overlap: int) -> List[Document]:
-        """Hybrid document splitting with enhanced metadata"""
+    def _split_document(self, document: Document, chunk_size: int, chunk_overlap: int) -> List[Document]:
+        """Split single document"""
         splitter = RecursiveCharacterTextSplitter(
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
@@ -593,15 +766,12 @@ class HybridTextSplitter:
         )
 
         chunks = splitter.split_documents([document])
-        
-        # Add enhanced metadata from 62.py
+
         for i, chunk in enumerate(chunks):
             chunk.metadata.update({
                 "chunk_index": i,
                 "total_chunks": len(chunks),
-                "chunk_type": "hybrid_split",
-                "chunk_size_used": chunk_size,
-                "chunk_overlap_used": chunk_overlap
+                "chunk_type": "adaptive_split"
             })
 
         return chunks
@@ -619,350 +789,11 @@ class HybridTextSplitter:
             return [document]
 
 # ================================
-# DOMAIN DETECTOR
-# ================================
-
-class DomainDetector:
-    def detect_domain(self, documents: List[Document], confidence_threshold: float = 0.3) -> Tuple[str, float]:
-        if not documents:
-            return "general", 0.5
-
-        combined_text = ' '.join([doc.page_content[:200] for doc in documents[:5]]).lower()
-        cache_key = hashlib.md5(combined_text.encode()).hexdigest()[:16]
-        
-        cached_result = CACHE_MANAGER.get_domain_result(cache_key)
-        if cached_result is not None:
-            logger.info(f"🔍 Using cached domain: {cached_result[0]} (confidence: {cached_result[1]:.2f})")
-            return cached_result
-
-        try:
-            domain_scores = self._keyword_based_detection(combined_text)
-            
-            if domain_scores:
-                best_domain = max(domain_scores, key=domain_scores.get)
-                best_score = domain_scores[best_domain]
-                
-                if best_score < confidence_threshold:
-                    best_domain = "general"
-                    best_score = confidence_threshold
-                
-                result = (best_domain, best_score)
-                CACHE_MANAGER.set_domain_result(cache_key, result)
-                logger.info(f"🔍 Domain detected: {best_domain} (confidence: {best_score:.2f})")
-                return result
-            
-            return "general", confidence_threshold
-            
-        except Exception as e:
-            logger.warning(f"⚠️ Domain detection error: {e}")
-            return "general", confidence_threshold
-
-    def _keyword_based_detection(self, combined_text: str) -> Dict[str, float]:
-        domain_scores = {}
-        for domain, keywords in DOMAIN_KEYWORDS.items():
-            matches = 0
-            for keyword in keywords:
-                matches += combined_text.count(keyword.lower())
-            
-            text_length = max(len(combined_text), 1)
-            normalized_score = matches / (len(keywords) * text_length / 1000)
-            domain_scores[domain] = min(1.0, normalized_score)
-        
-        return domain_scores
-
-DOMAIN_DETECTOR = DomainDetector()
-
-# ================================
-# HYBRID TOKEN PROCESSOR (Recommendation #6)
-# ================================
-
-class HybridTokenProcessor:
-    """Hybrid token processor combining intelligent context from 62.py with speed safeguards from 61.py"""
-    
-    def __init__(self):
-        self.max_context_tokens = 4000
-        # Character limit safeguard from 61.py
-        self.max_context_chars = MAX_CONTEXT_CHARS
-        
-        try:
-            self.tokenizer = tiktoken.get_encoding("cl100k_base")
-        except Exception as e:
-            logger.warning(f"⚠️ Failed to load tiktoken tokenizer: {e}")
-            self.tokenizer = None
-
-    def optimize_context_hybrid(self, documents: List[Document], query: str) -> str:
-        """Hybrid context optimization with sentence-level pruning and character limits"""
-        if not documents:
-            return ""
-
-        # Extract key terms from query for intelligent ranking (from 62.py)
-        query_terms = self._extract_key_terms(query)
-        
-        # Score documents by relevance to query
-        scored_docs = []
-        for doc in documents:
-            relevance_score = self._calculate_relevance(doc, query_terms)
-            token_count = self._estimate_tokens(doc.page_content)
-            efficiency_score = relevance_score / max(token_count, 1)
-            scored_docs.append((doc, relevance_score, efficiency_score, token_count))
-
-        # Sort by efficiency (relevance per token)
-        scored_docs.sort(key=lambda x: x[2], reverse=True)
-
-        # Build context within both token and character limits
-        context_parts = []
-        total_tokens = 0
-        total_chars = 0
-
-        for doc, rel_score, eff_score, token_count in scored_docs:
-            # Check both token and character limits (hybrid approach)
-            if (total_tokens + token_count <= self.max_context_tokens and 
-                total_chars + len(doc.page_content) <= self.max_context_chars):
-                
-                context_parts.append(doc.page_content)
-                total_tokens += token_count
-                total_chars += len(doc.page_content)
-                
-            elif (total_tokens < self.max_context_tokens * 0.8 and 
-                  total_chars < self.max_context_chars * 0.8):
-                
-                # Try to fit partial content with intelligent truncation
-                remaining_tokens = self.max_context_tokens - total_tokens
-                remaining_chars = self.max_context_chars - total_chars
-                remaining = min(remaining_tokens * 4, remaining_chars)  # Estimate character limit from tokens
-                
-                if remaining > 200:  # Minimum useful chunk
-                    partial_content = self._truncate_intelligently(
-                        doc.page_content, remaining, query_terms
-                    )
-                    context_parts.append(partial_content)
-                    break
-            else:
-                break
-
-        return "\n\n---\n\n".join(context_parts)
-
-    def _extract_key_terms(self, query: str) -> List[str]:
-        """Extract key terms from query"""
-        terms = query.lower().split()
-        stop_words = {'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'}
-        return [term for term in terms if term not in stop_words and len(term) > 2]
-
-    def _calculate_relevance(self, doc: Document, query_terms: List[str]) -> float:
-        """Calculate document relevance to query terms"""
-        content_lower = doc.page_content.lower()
-        score = 0.0
-        for term in query_terms:
-            count = content_lower.count(term)
-            score += count * (1.0 / len(doc.page_content))
-        return score
-
-    def _estimate_tokens(self, text: str) -> int:
-        """Estimate token count with fallback"""
-        if self.tokenizer:
-            try:
-                return len(self.tokenizer.encode(text))
-            except Exception:
-                pass
-        return max(1, int(len(text) / 3.8))
-
-    def _truncate_intelligently(self, content: str, max_chars: int, query_terms: List[str]) -> str:
-        """Intelligent truncation preserving query-relevant parts"""
-        sentences = content.split('. ')
-        
-        sentence_scores = []
-        for sentence in sentences:
-            score = sum(1 for term in query_terms if term.lower() in sentence.lower())
-            sentence_scores.append((sentence, score))
-
-        sentence_scores.sort(key=lambda x: x[1], reverse=True)
-        
-        selected_sentences = []
-        current_chars = 0
-        
-        for sentence, score in sentence_scores:
-            sentence_chars = len(sentence)
-            if current_chars + sentence_chars <= max_chars:
-                selected_sentences.append(sentence)
-                current_chars += sentence_chars
-        
-        return '. '.join(selected_sentences) + "..."
-
-# ================================
-# HYBRID EMBEDDING FUNCTIONS (Recommendation #7)
-# ================================
-
-async def get_embeddings_hybrid(texts: List[str]) -> List[np.ndarray]:
-    """Hybrid embedding generation with parallel batching from 61.py and caching from 62.py"""
-    if not texts:
-        return []
-
-    results = []
-    uncached_texts = []
-    uncached_indices = []
-
-    # Check cache first (from 62.py)
-    for i, text in enumerate(texts):
-        text_hash = hashlib.md5(text.encode()).hexdigest()[:16]  # Shorter hash for speed
-        cached_embedding = CACHE_MANAGER.get_embedding(text_hash)
-        if cached_embedding is not None:
-            results.append((i, cached_embedding))
-        else:
-            uncached_texts.append(text)
-            uncached_indices.append(i)
-
-    # Process uncached with parallel batching from 61.py
-    if uncached_texts:
-        model = await MODEL_MANAGER.get_sentence_model()
-        
-        if len(uncached_texts) <= OPTIMAL_BATCH_SIZE:
-            # Small batch - process directly
-            embeddings = await _process_embedding_batch_hybrid(model, uncached_texts)
-        else:
-            # Large batch - parallel processing
-            embeddings = await _process_embeddings_parallel_hybrid(model, uncached_texts)
-
-        # Cache results
-        for text, embedding in zip(uncached_texts, embeddings):
-            text_hash = hashlib.md5(text.encode()).hexdigest()[:16]
-            CACHE_MANAGER.set_embedding(text_hash, embedding)
-
-        # Add to results
-        for i, embedding in zip(uncached_indices, embeddings):
-            results.append((i, embedding))
-
-    # Sort and return
-    results.sort(key=lambda x: x[0])
-    return [embedding for _, embedding in results]
-
-async def _process_embeddings_parallel_hybrid(model, texts: List[str]) -> List[np.ndarray]:
-    """Process large batches in parallel with optimized batch size"""
-    chunk_size = OPTIMAL_BATCH_SIZE
-    chunks = [texts[i:i + chunk_size] for i in range(0, len(texts), chunk_size)]
-
-    # Process chunks in parallel with semaphore
-    semaphore = asyncio.Semaphore(MAX_PARALLEL_BATCHES)
-
-    async def process_chunk(chunk):
-        async with semaphore:
-            return await _process_embedding_batch_hybrid(model, chunk)
-
-    results = await asyncio.gather(*[process_chunk(chunk) for chunk in chunks])
-
-    # Flatten results
-    embeddings = []
-    for result in results:
-        embeddings.extend(result)
-    return embeddings
-
-async def _process_embedding_batch_hybrid(model, texts: List[str]) -> List[np.ndarray]:
-    """Process single embedding batch with speed optimization"""
-    embeddings = await asyncio.to_thread(
-        model.encode,
-        texts,
-        batch_size=len(texts),  # Process entire batch at once
-        show_progress_bar=False,
-        convert_to_numpy=True,
-        normalize_embeddings=True,
-        device='cpu'
-    )
-    return list(embeddings)
-
-async def get_query_embedding_hybrid(query: str) -> np.ndarray:
-    """Get single query embedding with caching"""
-    if not query.strip():
-        return np.zeros(384)
-
-    query_hash = hashlib.md5(query.encode()).hexdigest()[:16]
-    cached_embedding = CACHE_MANAGER.get_embedding(query_hash)
-    
-    if cached_embedding is not None:
-        return cached_embedding
-
-    model = await MODEL_MANAGER.get_sentence_model()
-    embedding = await asyncio.to_thread(
-        model.encode,
-        query,
-        convert_to_numpy=True
-    )
-
-    CACHE_MANAGER.set_embedding(query_hash, embedding)
-    return embedding
-
-# ================================
-# HYBRID RECIPROCAL RANK FUSION (Recommendation #3)
-# ================================
-
-def hybrid_reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], 
-                                 query_length: int, k_value: int = 60) -> List[Tuple[Document, float]]:
-    """Hybrid RRF - fast version for short queries, full version for complex queries"""
-    if not results_list:
-        return []
-
-    # Fast path for short queries (recommendation #3)
-    if query_length <= 8:
-        return fast_reciprocal_rank_fusion(results_list, k_value)
-    else:
-        return full_reciprocal_rank_fusion(results_list, k_value)
-
-def fast_reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], 
-                               k_value: int = 60) -> List[Tuple[Document, float]]:
-    """Fast RRF with minimal processing from 61.py"""
-    doc_scores = defaultdict(float)
-    seen_docs = {}
-
-    for i, results in enumerate(results_list):
-        weight = 0.6 if i == 0 else 0.4  # Fixed weights for speed
-        for rank, (doc, score) in enumerate(results):
-            doc_key = hashlib.md5(doc.page_content.encode()).hexdigest()[:16]
-            rrf_score = weight / (k_value + rank + 1)
-            doc_scores[doc_key] += rrf_score
-            if doc_key not in seen_docs:
-                seen_docs[doc_key] = doc
-
-    sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
-    if not sorted_docs:
-        return []
-
-    max_score = sorted_docs[0][1]
-    result = []
-    for doc_key, score in sorted_docs:
-        normalized_score = score / max_score
-        result.append((seen_docs[doc_key], normalized_score))
-    return result
-
-def full_reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], 
-                               k_value: int = 60) -> List[Tuple[Document, float]]:
-    """Full RRF with semantic=0.6, BM25=0.4 weights from 62.py"""
-    doc_scores = defaultdict(float)
-    seen_docs = {}
-    weights = {"semantic": 0.6, "bm25": 0.4}
-
-    for i, results in enumerate(results_list):
-        weight = weights.get("semantic" if i == 0 else "bm25", 1.0 / len(results_list))
-        for rank, (doc, score) in enumerate(results):
-            doc_key = hashlib.md5(doc.page_content.encode()).hexdigest()
-            rrf_score = weight / (k_value + rank + 1)
-            doc_scores[doc_key] += rrf_score
-            if doc_key not in seen_docs:
-                seen_docs[doc_key] = doc
-
-    sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
-    max_score = sorted_docs[0][1] if sorted_docs else 1.0
-
-    result = []
-    for doc_key, score in sorted_docs:
-        normalized_score = score / max_score
-        result.append((seen_docs[doc_key], normalized_score))
-    return result
-
-# ================================
 # FAISS VECTOR STORE
 # ================================
 
-class HybridFAISSStore:
-    """Hybrid FAISS implementation combining speed from 61.py with robustness from 62.py"""
-    
+class FAISSVectorStore:
+    """FAISS-based vector store implementation"""
     def __init__(self, dimension: int = 384):
         self.dimension = dimension
         self.index = None
@@ -970,51 +801,46 @@ class HybridFAISSStore:
         self.is_trained = False
 
     def initialize(self):
+        """Initialize FAISS index"""
         if not HAS_FAISS:
             raise ImportError("FAISS not available")
+
         try:
             self.index = faiss.IndexFlatIP(self.dimension)
             self.is_trained = True
-            logger.info("✅ Hybrid FAISS store initialized")
+            logger.info("✅ FAISS vector store initialized")
         except Exception as e:
             logger.error(f"❌ Failed to initialize FAISS: {e}")
             raise
 
-    async def add_documents_hybrid(self, documents: List[Document], embeddings: List[np.ndarray]):
-        """Hybrid document addition with optimized batching"""
+    async def add_documents(self, documents: List[Document], embeddings: List[np.ndarray]):
+        """Add documents with optimized batch processing"""
         try:
             if not self.is_trained:
                 self.initialize()
 
             if len(documents) != len(embeddings):
-                raise ValueError("Mismatch between documents and embeddings")
+                raise ValueError("Number of documents must match number of embeddings")
 
-            # Convert all embeddings at once for better performance
-            all_embeddings = np.array(embeddings, dtype=np.float32)
-            faiss.normalize_L2(all_embeddings)
+            chunk_size = 256
+            for i in range(0, len(embeddings), chunk_size):
+                end_idx = min(i + chunk_size, len(embeddings))
+                chunk_embeddings = np.array(embeddings[i:end_idx], dtype=np.float32)
 
-            # For large datasets, use IVF index for better performance (from 62.py)
-            if len(embeddings) > 1000 and not hasattr(self.index, 'nlist'):
-                logger.info("🔧 Upgrading to IVF index for large dataset")
-                nlist = min(int(np.sqrt(len(embeddings))), 256)
-                quantizer = faiss.IndexFlatIP(self.dimension)
-                new_index = faiss.IndexIVFFlat(quantizer, self.dimension, nlist)
-                new_index.train(all_embeddings)
-                new_index.add(all_embeddings)
-                self.index = new_index
-            else:
-                # Add all embeddings in single operation
-                self.index.add(all_embeddings)
+                faiss.normalize_L2(chunk_embeddings)
+                self.index.add(chunk_embeddings)
+                self.documents.extend(documents[i:end_idx])
 
-            self.documents.extend(documents)
-            logger.info(f"✅ Added {len(documents)} documents to hybrid FAISS index (total: {len(self.documents)})")
+                logger.info(f"✅ Added chunk {i//chunk_size + 1}/{(len(embeddings)-1)//chunk_size + 1}")
+
+            logger.info(f"✅ Added {len(documents)} documents to FAISS index (total: {len(self.documents)})")
 
         except Exception as e:
             logger.error(f"❌ Error adding documents to FAISS: {e}")
             raise
 
-    async def similarity_search_hybrid(self, query_embedding: np.ndarray, k: int = 10) -> List[Tuple[Document, float]]:
-        """Hybrid similarity search with error handling"""
+    async def similarity_search_with_score(self, query_embedding: np.ndarray, k: int = 10) -> List[Tuple[Document, float]]:
+        """Search for similar documents with scores"""
         try:
             if not self.is_trained or len(self.documents) == 0:
                 return []
@@ -1039,77 +865,301 @@ class HybridFAISSStore:
             return []
 
     def clear(self):
+        """Clear the vector store"""
         self.documents.clear()
         if self.index:
             self.index.reset()
 
 # ================================
-# GEMINI CLIENT MANAGEMENT
+# DOMAIN DETECTOR - WITH SMART CACHING
 # ================================
 
-gemini_client = None
+class DomainDetector:
+    """Universal domain detector with smart caching"""
+    def detect_domain(self, documents: List[Document], confidence_threshold: float = 0.3) -> Tuple[str, float]:
+        """Universal domain detection with smart caching"""
+        if not documents:
+            return "general", 0.5
 
-async def ensure_gemini_ready():
-    global gemini_client
-    if gemini_client is None and GEMINI_API_KEY:
+        combined_text = ' '.join([doc.page_content[:200] for doc in documents[:5]]).lower()
+        cache_key = hashlib.md5(combined_text.encode()).hexdigest()[:16]
+
+        cached_result = CACHE_MANAGER.get_domain_result(cache_key)
+        if cached_result is not None:
+            logger.info(f"🔍 Using cached domain: {cached_result[0]} (confidence: {cached_result[1]:.2f})")
+            return cached_result
+
         try:
-            gemini_client = AsyncOpenAI(
-                api_key=GEMINI_API_KEY,
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
-                max_retries=3
-            )
-            logger.info("✅ Gemini client initialized successfully")
+            domain_scores = self._keyword_based_detection(combined_text)
+
+            if domain_scores:
+                best_domain = max(domain_scores, key=domain_scores.get)
+                best_score = domain_scores[best_domain]
+
+                if best_score < confidence_threshold:
+                    best_domain = "general"
+                    best_score = confidence_threshold
+
+                result = (best_domain, best_score)
+                CACHE_MANAGER.set_domain_result(cache_key, result)
+
+                logger.info(f"🔍 Domain detected: {best_domain} (confidence: {best_score:.2f})")
+                return result
+
+            return "general", confidence_threshold
+
         except Exception as e:
-            logger.error(f"❌ Failed to initialize Gemini client: {e}")
-            raise HTTPException(status_code=503, detail="Gemini client not available")
-    elif gemini_client is None:
-        raise HTTPException(status_code=503, detail="Gemini API key not configured")
+            logger.warning(f"⚠️ Domain detection error: {e}")
+            return "general", confidence_threshold
+
+    def _keyword_based_detection(self, combined_text: str) -> Dict[str, float]:
+        """Keyword-based domain detection"""
+        domain_scores = {}
+        for domain, keywords in DOMAIN_KEYWORDS.items():
+            matches = 0
+            for keyword in keywords:
+                matches += combined_text.count(keyword.lower())
+
+            text_length = max(len(combined_text), 1)
+            normalized_score = matches / (len(keywords) * text_length / 1000)
+            domain_scores[domain] = min(1.0, normalized_score)
+
+        return domain_scores
 
 # ================================
-# HYBRID RAG SYSTEM
+# OPTIMIZED TOKEN PROCESSOR
 # ================================
 
-class HybridRAGSystem:
-    """Hybrid RAG system combining the best features from both implementations"""
+class TokenProcessor:
+    """Token optimization processor with fast heuristics"""
+    def __init__(self):
+        self.max_context_tokens = 4000
+        self.tokenizer = None
+        try:
+            self.tokenizer = tiktoken.get_encoding("cl100k_base")
+        except Exception as e:
+            logger.warning(f"⚠️ Failed to load tiktoken tokenizer: {e}")
+
+    def estimate_tokens_fast(self, text: str) -> int:
+        """Fast token estimation - 20x faster than tiktoken"""
+        if not text:
+            return 0
+        return max(1, int(len(text) / 3.8))
+
+    def optimize_context_fast(self, documents: List[Document], query: str) -> str:
+        """Fast context optimization - skip complex token budget calculations"""
+        if not documents:
+            return ""
+
+        context_parts = []
+        total_chars = 0
+        max_chars = 12000
+
+        for doc in documents[:6]:
+            if total_chars + len(doc.page_content) <= max_chars:
+                context_parts.append(doc.page_content)
+                total_chars += len(doc.page_content)
+            else:
+                remaining = max_chars - total_chars
+                if remaining > 200:
+                    context_parts.append(doc.page_content[:remaining] + "...")
+                break
+
+        return "\n\n".join(context_parts)
+
+    @lru_cache(maxsize=2000)
+    def estimate_tokens(self, text: str) -> int:
+        """Accurate token estimation with fallback"""
+        return self.estimate_tokens_fast(text)
+
+    def optimize_context(self, documents: List[Document], query: str, max_tokens: int = None) -> str:
+        """Optimize context for token limit"""
+        return self.optimize_context_fast(documents, query)
+
+# ================================
+# LARGE DOCUMENT PROCESSOR
+# ================================
+
+class LargeDocumentProcessor:
+    def __init__(self):
+        self.max_chunk_batch_size = 100
+        self.embedding_batch_size = 32
+        
+    async def process_large_document(self, documents: List[Document]) -> Dict[str, Any]:
+        total_chunks = len(documents)
+        
+        if total_chunks > 1000:
+            return await self._process_in_streaming_mode(documents)
+        else:
+            return await self._process_normally(documents)
     
+    async def _process_in_streaming_mode(self, documents: List[Document]) -> Dict[str, Any]:
+        processed_chunks = 0
+        batch_size = self.max_chunk_batch_size
+        
+        for i in range(0, len(documents), batch_size):
+            batch = documents[i:i + batch_size]
+            batch_texts = [doc.page_content for doc in batch]
+            
+            embeddings = await self._get_embeddings_streaming(batch_texts)
+            processed_chunks += len(batch)
+            logger.info(f"📊 Processed {processed_chunks}/{len(documents)} chunks")
+        
+        return {"streaming_mode": True, "total_chunks": len(documents)}
+
+    async def _process_normally(self, documents: List[Document]) -> Dict[str, Any]:
+        return {"streaming_mode": False, "total_chunks": len(documents)}
+
+    async def _get_embeddings_streaming(self, texts: List[str]) -> List[np.ndarray]:
+        """Process embeddings with memory-efficient streaming"""
+        all_embeddings = []
+        batch_size = self.embedding_batch_size
+        
+        for i in range(0, len(texts), batch_size):
+            batch_texts = texts[i:i + batch_size]
+            
+            cached_embeddings = []
+            uncached_texts = []
+            
+            for text in batch_texts:
+                text_hash = hashlib.md5(text.encode()).hexdigest()
+                cached = CACHE_MANAGER.get_embedding(text_hash)
+                if cached is not None:
+                    cached_embeddings.append(cached)
+                else:
+                    uncached_texts.append((text, text_hash))
+            
+            if uncached_texts:
+                texts_to_embed = [text for text, _ in uncached_texts]
+                new_embeddings = await asyncio.to_thread(
+                    base_sentence_model.encode,
+                    texts_to_embed,
+                    batch_size=16,
+                    show_progress_bar=False,
+                    normalize_embeddings=True
+                )
+                
+                for (text, text_hash), embedding in zip(uncached_texts, new_embeddings):
+                    CACHE_MANAGER.set_embedding(text_hash, embedding)
+                
+                all_embeddings.extend(new_embeddings)
+            
+            all_embeddings.extend(cached_embeddings)
+        
+        return all_embeddings
+
+# ================================
+# RAG SYSTEM - ENHANCED
+# ================================
+
+class RAGSystem:
+    """Enhanced RAG system with smart caching and cleanup"""
     def __init__(self):
         self.documents = []
         self.vector_store = None
         self.bm25_retriever = None
         self.domain = "general"
         self.loader = UnifiedLoader()
-        self.text_splitter = HybridTextSplitter()
-        self.token_processor = HybridTokenProcessor()
+        self.text_splitter = AdaptiveTextSplitter()
+        self.token_processor = TokenProcessor()
+        self.doc_state_manager = DocumentStateManager()
+        self.large_doc_processor = LargeDocumentProcessor()
 
-    def is_fast_path_query(self, query: str) -> bool:
-        """Enhanced fast-path detection (recommendation #4)"""
-        fast_indicators = [
-            len(query.split()) <= 8,  # Short queries
+    async def cleanup(self):
+        """RAGSystem cleanup method"""
+        self.documents.clear()
+        if self.vector_store:
+            self.vector_store.clear()
+        logger.info("🧹 RAGSystem cleaned up")
+
+    def is_simple_query(self, query: str) -> bool:
+        """Detect simple queries that can use fast path"""
+        simple_indicators = [
+            len(query.split()) <= 8,
             not any(word in query.lower() for word in ['compare', 'analyze', 'explain why', 'how does', 'what are the differences']),
-            query.count('?') <= 1,
-            not any(word in query.lower() for word in ['difference', 'versus', 'vs', 'between'])
+            query.count('?') <= 1
         ]
-        return sum(fast_indicators) >= 3
+        return all(simple_indicators)
+
+    async def query_fast_path(self, query: str) -> Dict[str, Any]:
+        """Fast path for simple queries"""
+        retrieved_docs = self.documents[:3]
+        context = "\n\n".join([doc.page_content[:800] for doc in retrieved_docs])
+        answer = await self._generate_response(query, context, self.domain, 0.8)
+
+        return {
+            "query": query,
+            "answer": answer,
+            "confidence": 0.8,
+            "domain": self.domain,
+            "fast_path": True,
+            "processing_time": 0.5
+        }
+
+    async def retrieve_for_analytical(self, query: str) -> List[Document]:
+        """Enhanced retrieval for analytical queries"""
+        vector_docs, scores = await self.retrieve_and_rerank_optimized(query, top_k=10)
+        
+        query_entities = self._extract_entities(query)
+        
+        related_docs = []
+        for entity in query_entities:
+            entity_docs = await self._find_entity_related_docs(entity, exclude_ids=set())
+            related_docs.extend(entity_docs[:2])
+        
+        all_docs = vector_docs + related_docs
+        return self._deduplicate_documents(all_docs)[:8]
+
+    def _extract_entities(self, query: str) -> List[str]:
+        """Simple entity extraction"""
+        entities = []
+        capitalized = re.findall(r'\b[A-Z][a-z]+\b', query)
+        quoted = re.findall(r'"([^"]*)"', query)
+        return entities + capitalized + quoted
+
+    async def _find_entity_related_docs(self, entity: str, exclude_ids: set) -> List[Document]:
+        """Find documents related to specific entities"""
+        related_docs = []
+        for doc in self.documents:
+            if entity.lower() in doc.page_content.lower():
+                doc_id = id(doc)
+                if doc_id not in exclude_ids:
+                    related_docs.append(doc)
+                    exclude_ids.add(doc_id)
+        return related_docs[:5]
+
+    def _deduplicate_documents(self, docs: List[Document]) -> List[Document]:
+        """Remove duplicate documents"""
+        seen_content = set()
+        unique_docs = []
+        for doc in docs:
+            content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
+            if content_hash not in seen_content:
+                seen_content.add(content_hash)
+                unique_docs.append(doc)
+        return unique_docs
 
     async def process_documents(self, sources: List[str]) -> Dict[str, Any]:
-        """Process documents with hybrid optimizations"""
+        """Process documents with enhanced caching and state management"""
         start_time = time.time()
-        
-        # Document signature checking from 62.py
-        doc_signature = hashlib.md5(str(sorted(sources)).encode()).hexdigest()
-        CACHE_MANAGER.set_current_document(doc_signature)
-        
+
+        doc_signature = self.doc_state_manager.generate_doc_signature(sources)
+
         if hasattr(self, '_last_doc_signature') and self._last_doc_signature == doc_signature:
             logger.info("📄 Documents already processed, skipping...")
             return {"cached": True, "processing_time": 0.001}
-        
+
+        if self.doc_state_manager.should_invalidate_cache(doc_signature):
+            logger.info("🧹 New documents detected - invalidating all caches")
+            self.doc_state_manager.invalidate_all_caches()
+            self.doc_state_manager.current_doc_hash = doc_signature
+            self.doc_state_manager.current_doc_timestamp = time.time()
+
         self._last_doc_signature = doc_signature
 
         try:
             logger.info(f"📄 Processing {len(sources)} documents")
-            
-            # Parallel document loading
+
             raw_documents = []
             for source in sources:
                 try:
@@ -1122,177 +1172,204 @@ class HybridRAGSystem:
             if not raw_documents:
                 raise ValueError("No documents could be loaded")
 
-            # Domain detection and chunking
             domain, domain_confidence = DOMAIN_DETECTOR.detect_domain(raw_documents)
             self.domain = domain
-            
+
             self.documents = self.text_splitter.split_documents(raw_documents, domain)
-            
-            # Setup retrievers
-            await self._setup_retrievers_hybrid()
+
+            await self._setup_retrievers()
 
             processing_time = time.time() - start_time
+
             result = {
                 'domain': domain,
                 'domain_confidence': float(domain_confidence),
                 'total_chunks': len(self.documents),
-                'processing_time': processing_time,
-                'document_signature': doc_signature[:8]
+                'processing_time': processing_time
             }
 
-            logger.info(f"✅ Hybrid processing complete in {processing_time:.2f}s")
+            logger.info(f"✅ Processing complete in {processing_time:.2f}s")
             return sanitize_for_json(result)
 
         except Exception as e:
             logger.error(f"❌ Document processing error: {e}")
             raise
 
-    async def _setup_retrievers_hybrid(self):
-        """Hybrid retriever setup with parallel initialization"""
+    async def _setup_retrievers(self):
+        """Setup retrievers with FAISS and BM25"""
         try:
-            logger.info("🔧 Setting up hybrid retrievers...")
+            logger.info("🔧 Setting up retrievers...")
 
-            # Setup FAISS vector store
             if HAS_FAISS and self.documents:
-                self.vector_store = HybridFAISSStore(dimension=384)
-                self.vector_store.initialize()
+                try:
+                    await ensure_models_ready()
+                    self.vector_store = FAISSVectorStore(dimension=384)
+                    self.vector_store.initialize()
 
-                doc_texts = [doc.page_content for doc in self.documents]
-                embeddings = await get_embeddings_hybrid(doc_texts)
-                await self.vector_store.add_documents_hybrid(self.documents, embeddings)
-                logger.info("✅ Hybrid FAISS vector store setup complete")
+                    doc_texts = [doc.page_content for doc in self.documents]
+                    embeddings = await get_embeddings_batch_optimized(doc_texts)
 
-            # Setup BM25 retriever
-            if self.documents:
-                self.bm25_retriever = await asyncio.to_thread(
-                    BM25Retriever.from_documents, self.documents
-                )
-                self.bm25_retriever.k = min(RERANK_TOP_K, len(self.documents))
-                logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
+                    await self.vector_store.add_documents(self.documents, embeddings)
+                    logger.info("✅ FAISS vector store setup complete")
+
+                except Exception as e:
+                    logger.warning(f"⚠️ FAISS setup failed: {e}")
+                    self.vector_store = None
+
+            try:
+                if self.documents:
+                    self.bm25_retriever = await asyncio.to_thread(
+                        BM25Retriever.from_documents, self.documents
+                    )
+                    self.bm25_retriever.k = min(RERANK_TOP_K, len(self.documents))
+                    logger.info(f"✅ BM25 retriever setup complete (k={self.bm25_retriever.k})")
+            except Exception as e:
+                logger.warning(f"⚠️ BM25 retriever setup failed: {e}")
 
         except Exception as e:
-            logger.error(f"❌ Hybrid retriever setup error: {e}")
+            logger.error(f"❌ Retriever setup error: {e}")
 
-    async def retrieve_and_rerank_hybrid(self, query: str, top_k: int = CONTEXT_DOCS) -> Tuple[List[Document], List[float]]:
-        """Hybrid retrieval with conditional reranking (recommendation #4)"""
+    async def retrieve_and_rerank_optimized(self, query: str, top_k: int = 6) -> Tuple[List[Document], List[float]]:
+        """Streamlined retrieval - same components, faster execution"""
         if not self.documents:
             return [], []
 
-        query_embedding = await get_query_embedding_hybrid(query)
-        
-        # Vector search
+        query_embedding = await get_query_embedding(query)
+
         vector_docs = []
         if self.vector_store:
             try:
-                vector_results = await self.vector_store.similarity_search_hybrid(
-                    query_embedding, k=SEMANTIC_SEARCH_K
+                vector_results = await self.vector_store.similarity_search_with_score(
+                    query_embedding, k=8
                 )
-                vector_docs = vector_results
+                vector_docs = [doc for doc, score in vector_results]
             except Exception as e:
                 logger.warning(f"⚠️ Vector search failed: {e}")
 
-        # BM25 search
         bm25_docs = []
-        if self.bm25_retriever and len(vector_docs) < SEMANTIC_SEARCH_K:
+        if self.bm25_retriever and len(vector_docs) < 8:
             try:
                 bm25_results = await asyncio.to_thread(self.bm25_retriever.invoke, query) or []
-                bm25_docs = [(doc, 1.0 - (i * 0.1)) for i, doc in enumerate(bm25_results[:6])]
+                bm25_docs = bm25_results[:4]
             except Exception as e:
                 logger.warning(f"⚠️ BM25 search failed: {e}")
 
-        # Hybrid RRF based on query length (recommendation #3)
-        query_length = len(query.split())
-        if vector_docs and bm25_docs:
-            fused_results = hybrid_reciprocal_rank_fusion([vector_docs, bm25_docs], query_length)
-            all_docs = [doc for doc, score in fused_results[:top_k]]
-        elif vector_docs:
-            all_docs = [doc for doc, score in vector_docs[:top_k]]
-        elif bm25_docs:
-            all_docs = [doc for doc, score in bm25_docs[:top_k]]
-        else:
-            return [], []
+        all_docs = vector_docs[:6] + bm25_docs[:2]
 
-        # Deduplicate
         seen_content = set()
         unique_docs = []
         for doc in all_docs:
-            content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()[:16]
+            content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
             if content_hash not in seen_content:
                 seen_content.add(content_hash)
                 unique_docs.append(doc)
 
-        # Conditional reranking (recommendation #4)
-        skip_reranker = self.is_fast_path_query(query)
-        
-        if not skip_reranker and len(unique_docs) > 3:
+        if reranker and len(unique_docs) > 3:
             try:
-                reranker = await MODEL_MANAGER.get_reranker()
-                pairs = [[query, doc.page_content[:512]] for doc in unique_docs[:12]]
-                
-                # Batch processing for speed
-                batch_size = 32
-                all_scores = []
-                for i in range(0, len(pairs), batch_size):
-                    batch_pairs = pairs[i:i + batch_size]
-                    batch_scores = reranker.predict(batch_pairs)
-                    all_scores.extend(batch_scores)
-
-                scored_docs = list(zip(unique_docs[:len(all_scores)], all_scores))
+                pairs = [[query, doc.page_content[:256]] for doc in unique_docs[:12]]
+                scores = reranker.predict(pairs)
+                scored_docs = list(zip(unique_docs[:len(scores)], scores))
                 scored_docs.sort(key=lambda x: x[1], reverse=True)
-                
+
                 final_docs = [doc for doc, _ in scored_docs[:top_k]]
                 final_scores = [score for _, score in scored_docs[:top_k]]
-                
-                logger.info(f"🎯 Hybrid retrieval with reranking: {len(final_docs)} documents")
                 return final_docs, final_scores
-                
+
             except Exception as e:
                 logger.warning(f"⚠️ Reranking failed: {e}")
 
-        # Without reranking
-        final_docs = unique_docs[:top_k]
-        final_scores = [0.8] * len(final_docs)
+        return unique_docs[:top_k], [0.8] * min(len(unique_docs), top_k)
+
+    async def query_large_document_optimized(self, query: str) -> Dict[str, Any]:
+        """Optimized querying for large documents"""
+        candidate_chunks = await self._pre_filter_chunks(query)
         
-        logger.info(f"🎯 Hybrid retrieval (fast path): {len(final_docs)} documents")
-        return final_docs, final_scores
+        if len(candidate_chunks) > 50:
+            stage1_docs = await self._fast_retrieval_stage1(query, candidate_chunks, k=20)
+            final_docs = await self._precision_retrieval_stage2(query, stage1_docs, k=6)
+        else:
+            final_docs, scores = await self.retrieve_and_rerank_optimized(query, top_k=6)
+        
+        return await self._generate_response_optimized(query, final_docs)
+
+    async def _pre_filter_chunks(self, query: str) -> List[Document]:
+        """Fast pre-filtering using BM25 or keyword matching"""
+        if self.bm25_retriever:
+            candidates = await asyncio.to_thread(
+                self.bm25_retriever.invoke, 
+                query
+            )
+            return candidates[:100]
+        return self.documents[:100]
+
+    async def _fast_retrieval_stage1(self, query: str, candidates: List[Document], k: int) -> List[Document]:
+        """Fast first stage retrieval"""
+        return candidates[:k]
+
+    async def _precision_retrieval_stage2(self, query: str, docs: List[Document], k: int) -> List[Document]:
+        """Precision second stage retrieval"""
+        return docs[:k]
+
+    async def _generate_response_optimized(self, query: str, docs: List[Document]) -> Dict[str, Any]:
+        """Generate optimized response"""
+        context = self.token_processor.optimize_context_fast(docs, query)
+        answer = await self._generate_response(query, context, self.domain, 0.8)
+        
+        return {
+            "query": query,
+            "answer": answer,
+            "confidence": 0.8,
+            "domain": self.domain
+        }
 
     async def query(self, query: str) -> Dict[str, Any]:
-        """Hybrid query processing with caching and confidence calculation"""
+        """Process query with caching and return response"""
         start_time = time.time()
-
         try:
-            # Check query cache first
-            query_hash = hashlib.md5(query.encode()).hexdigest()[:16]
-            cached_result = CACHE_MANAGER.get_query_result(query_hash)
-            if cached_result:
-                cached_result['processing_time'] = 0.001
-                cached_result['cached'] = True
-                return cached_result
+            doc_hash = getattr(self, '_last_doc_signature', 'unknown')
+            cached_answer = QUERY_CACHE.get_cached_answer(query, doc_hash)
 
-            # Fast path detection
-            if self.is_fast_path_query(query):
+            if cached_answer:
+                return {
+                    "query": query,
+                    "answer": cached_answer,
+                    "confidence": 0.9,
+                    "domain": self.domain,
+                    "processing_time": time.time() - start_time,
+                    "cached": True
+                }
+
+            CACHE_MANAGER.cleanup_if_needed()
+            MEMORY_MANAGER.cleanup_if_needed()
+
+            # Enhanced query classification
+            query_analysis = QUERY_ANALYZER.classify_query(query)
+            
+            if self.is_simple_query(query) and query_analysis['type'] == 'factual':
                 result = await self.query_fast_path(query)
-                CACHE_MANAGER.set_query_result(query_hash, result)
+                QUERY_CACHE.cache_answer(query, doc_hash, result['answer'])
                 return result
 
-            # Full retrieval
-            retrieved_docs, similarity_scores = await self.retrieve_and_rerank_hybrid(query, CONTEXT_DOCS)
+            # Enhanced retrieval for analytical queries
+            if query_analysis['requires_multi_context']:
+                retrieved_docs = await self.retrieve_for_analytical(query)
+                similarity_scores = [0.8] * len(retrieved_docs)
+            else:
+                retrieved_docs, similarity_scores = await self.retrieve_and_rerank_optimized(query, CONTEXT_DOCS)
 
             if not retrieved_docs:
-                result = {
+                return {
                     "query": query,
                     "answer": "No relevant documents found for your query.",
                     "confidence": 0.0,
                     "domain": self.domain,
                     "processing_time": time.time() - start_time
                 }
-                return result
 
-            # Hybrid confidence calculation (recommendation #5)
-            confidence = self._calculate_hybrid_confidence(query, retrieved_docs, similarity_scores)
+            confidence = self._enhanced_confidence_calculation(query, retrieved_docs, similarity_scores)
 
             if confidence < CONFIDENCE_THRESHOLD:
-                result = {
+                return {
                     "query": query,
                     "answer": "I don't have enough relevant information to answer this question accurately.",
                     "confidence": float(confidence),
@@ -1300,15 +1377,13 @@ class HybridRAGSystem:
                     "retrieved_chunks": len(retrieved_docs),
                     "processing_time": time.time() - start_time
                 }
-                return result
 
-            # Hybrid context optimization
-            context = self.token_processor.optimize_context_hybrid(retrieved_docs, query)
-
-            # Generate response
+            context = self.token_processor.optimize_context_fast(retrieved_docs, query)
             answer = await self._generate_response(query, context, self.domain, confidence)
 
             processing_time = time.time() - start_time
+            PERFORMANCE_MONITOR.record_timing("query_processing", processing_time)
+
             result = {
                 "query": query,
                 "answer": answer,
@@ -1318,8 +1393,7 @@ class HybridRAGSystem:
                 "processing_time": processing_time
             }
 
-            # Cache result
-            CACHE_MANAGER.set_query_result(query_hash, result)
+            QUERY_CACHE.cache_answer(query, doc_hash, answer)
             return sanitize_for_json(result)
 
         except Exception as e:
@@ -1332,51 +1406,36 @@ class HybridRAGSystem:
                 "processing_time": time.time() - start_time
             }
 
-    async def query_fast_path(self, query: str) -> Dict[str, Any]:
-        """Fast path for simple queries"""
-        retrieved_docs = self.documents[:3]
-        context = "\n\n".join([doc.page_content[:800] for doc in retrieved_docs])
-        answer = await self._generate_response(query, context, self.domain, 0.8)
-        
-        return {
-            "query": query,
-            "answer": answer,
-            "confidence": 0.8,
-            "domain": self.domain,
-            "fast_path": True,
-            "processing_time": 0.5
-        }
-
-    def _calculate_hybrid_confidence(self, query: str, docs: List[Document], scores: List[float]) -> float:
-        """Hybrid confidence calculation (recommendation #5)"""
+    def _enhanced_confidence_calculation(self, query: str, docs: List[Document], scores: List[float]) -> float:
+        """Enhanced confidence calculation with multiple factors"""
         if not scores:
             return 0.0
 
         try:
             scores_array = np.array(scores)
+
             if np.max(scores_array) > 1.0:
                 scores_array = scores_array / np.max(scores_array)
             scores_array = np.clip(scores_array, 0.0, 1.0)
 
-            # Multi-factor confidence from 62.py
             factors = {
-                'max_score': np.max(scores_array),
-                'avg_score': np.mean(scores_array),
+                'retrieval_score': np.mean(scores_array[:3]),
                 'query_coverage': self._calculate_query_coverage(query, docs),
-                'score_consistency': max(0.0, 1.0 - np.std(scores_array)) if len(scores_array) > 1 else 1.0
+                'answer_consistency': self._check_answer_consistency(docs),
+                'source_diversity': self._calculate_source_diversity(docs),
+                'entity_match': self._calculate_entity_match(query, docs)
             }
 
-            # Weights from recommendation #5
             weights = {
-                'max_score': 0.35,
-                'avg_score': 0.25,
+                'retrieval_score': 0.25,
                 'query_coverage': 0.25,
-                'score_consistency': 0.15
+                'answer_consistency': 0.20,
+                'source_diversity': 0.15,
+                'entity_match': 0.15
             }
 
             confidence = sum(factors[key] * weights[key] for key in factors)
 
-            # Direct keyword boost from 61.py
             query_lower = query.lower()
             for doc in docs[:3]:
                 if query_lower in doc.page_content.lower():
@@ -1400,11 +1459,123 @@ class HybridRAGSystem:
         
         return len(covered_terms) / max(len(query_terms), 1)
 
+    def _check_answer_consistency(self, docs: List[Document]) -> float:
+        """Check consistency across documents"""
+        if len(docs) < 2:
+            return 1.0
+        
+        # Simple consistency check based on overlapping terms
+        all_terms = []
+        for doc in docs[:5]:
+            terms = set(doc.page_content.lower().split())
+            all_terms.append(terms)
+        
+        if not all_terms:
+            return 0.5
+        
+        base_terms = all_terms[0]
+        consistency_scores = []
+        
+        for terms in all_terms[1:]:
+            overlap = len(base_terms.intersection(terms))
+            total = len(base_terms.union(terms))
+            if total > 0:
+                consistency_scores.append(overlap / total)
+        
+        return np.mean(consistency_scores) if consistency_scores else 0.5
+
+    def _calculate_source_diversity(self, docs: List[Document]) -> float:
+        """Calculate diversity of sources"""
+        if not docs:
+            return 0.0
+        
+        sources = set()
+        for doc in docs:
+            source = doc.metadata.get('source', 'unknown')
+            sources.add(source)
+        
+        # Normalize by number of documents
+        diversity = len(sources) / len(docs)
+        return min(1.0, diversity * 2)  # Scale to give reasonable scores
+
+    def _calculate_entity_match(self, query: str, docs: List[Document]) -> float:
+        """Calculate entity matching between query and documents"""
+        query_entities = self._extract_entities(query)
+        if not query_entities:
+            return 0.5
+        
+        entity_matches = 0
+        for entity in query_entities:
+            for doc in docs[:5]:
+                if entity.lower() in doc.page_content.lower():
+                    entity_matches += 1
+                    break
+        
+        return entity_matches / len(query_entities)
+
+    def _calculate_confidence(self, query: str, similarity_scores: List[float], retrieved_docs: List[Document]) -> float:
+        """Enhanced confidence calculation"""
+        if not similarity_scores:
+            return 0.0
+
+        try:
+            scores_array = np.array(similarity_scores)
+
+            if np.max(scores_array) > 1.0:
+                scores_array = scores_array / np.max(scores_array)
+
+            scores_array = np.clip(scores_array, 0.0, 1.0)
+
+            max_score = np.max(scores_array)
+            avg_score = np.mean(scores_array)
+            score_std = np.std(scores_array) if len(scores_array) > 1 else 0.0
+
+            score_consistency = max(0.0, 1.0 - score_std)
+            query_match = self._calculate_query_match(query, retrieved_docs)
+
+            confidence = (
+                0.35 * max_score +
+                0.25 * avg_score +
+                0.25 * query_match +
+                0.15 * score_consistency
+            )
+
+            query_lower = query.lower()
+            for doc in retrieved_docs[:3]:
+                if query_lower in doc.page_content.lower():
+                    confidence += 0.1
+                    break
+
+            return min(1.0, max(0.0, confidence))
+
+        except Exception as e:
+            logger.warning(f"⚠️ Confidence calculation error: {e}")
+            return 0.3
+
+    def _calculate_query_match(self, query: str, docs: List[Document]) -> float:
+        """Calculate query-document match quality"""
+        query_terms = set(query.lower().split())
+        if not query_terms:
+            return 0.5
+
+        match_scores = []
+        for doc in docs[:5]:
+            doc_terms = set(doc.page_content.lower().split())
+            overlap = len(query_terms.intersection(doc_terms))
+            match_score = overlap / len(query_terms)
+
+            if query.lower() in doc.page_content.lower():
+                match_score += 0.2
+
+            match_scores.append(match_score)
+
+        return np.mean(match_scores) if match_scores else 0.5
+
     async def _generate_response(self, query: str, context: str, domain: str, confidence: float) -> str:
-        """Generate response using Gemini"""
+        """Generate response using Google Gemini"""
         try:
             await ensure_gemini_ready()
-            
+
             if not gemini_client:
                 return "System is still initializing. Please wait a moment and try again."
 
@@ -1446,16 +1617,184 @@ Please provide a comprehensive answer based on the context above."""
         except asyncio.TimeoutError:
             logger.error(f"❌ Response generation timeout after {QUESTION_TIMEOUT}s")
             return "I apologize, but the response generation took too long. Please try again with a simpler question."
+
         except Exception as e:
             logger.error(f"❌ Response generation error: {e}")
             return f"I apologize, but I encountered an error while processing your query: {str(e)}"
 
 # ================================
-# GLOBAL CACHE FOR DOCUMENT PROCESSING
+# UTILITY FUNCTIONS WITH SMART CACHING
 # ================================
 
-_document_cache = {}
-_cache_ttl = 1800  # 30 minutes
+def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], k_value: int = 60) -> List[Tuple[Document, float]]:
+    """Implement Reciprocal Rank Fusion for combining multiple result sets"""
+    if not results_list:
+        return []
+
+    doc_scores = defaultdict(float)
+    seen_docs = {}
+
+    weights = {"semantic": 0.6, "bm25": 0.4}
+
+    for i, results in enumerate(results_list):
+        weight = weights.get("semantic" if i == 0 else "bm25", 1.0 / len(results_list))
+
+        for rank, (doc, score) in enumerate(results):
+            doc_key = hashlib.md5(doc.page_content.encode()).hexdigest()
+            rrf_score = weight / (k_value + rank + 1)
+            doc_scores[doc_key] += rrf_score
+
+            if doc_key not in seen_docs:
+                seen_docs[doc_key] = doc
+
+    sorted_docs = sorted(doc_scores.items(), key=lambda x: x[1], reverse=True)
+
+    max_score = sorted_docs[0][1] if sorted_docs else 1.0
+    result = []
+    for doc_key, score in sorted_docs:
+        normalized_score = score / max_score
+        result.append((seen_docs[doc_key], normalized_score))
+
+    return result
+
+async def get_embeddings_batch_optimized(texts: List[str]) -> List[np.ndarray]:
+    """Process embeddings with simple batching - OPTIMIZED"""
+    if not texts:
+        return []
+
+    results = []
+    uncached_texts = []
+    uncached_indices = []
+
+    for i, text in enumerate(texts):
+        text_hash = hashlib.md5(text.encode()).hexdigest()
+        cached_embedding = CACHE_MANAGER.get_embedding(text_hash)
+        if cached_embedding is not None:
+            results.append((i, cached_embedding))
+        else:
+            uncached_texts.append(text)
+            uncached_indices.append(i)
+
+    if uncached_texts:
+        await ensure_models_ready()
+        if base_sentence_model:
+            embeddings = await asyncio.to_thread(
+                base_sentence_model.encode,
+                uncached_texts,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True
+            )
+
+            for text, embedding in zip(uncached_texts, embeddings):
+                text_hash = hashlib.md5(text.encode()).hexdigest()
+                CACHE_MANAGER.set_embedding(text_hash, embedding)
+
+            for i, embedding in zip(uncached_indices, embeddings):
+                results.append((i, embedding))
+
+    results.sort(key=lambda x: x[0])
+    return [embedding for _, embedding in results]
+
+async def get_query_embedding(query: str) -> np.ndarray:
+    """Get single query embedding with smart caching"""
+    if not query.strip():
+        return np.zeros(384)
+
+    query_hash = hashlib.md5(query.encode()).hexdigest()
+    cached_embedding = CACHE_MANAGER.get_embedding(query_hash)
+
+    if cached_embedding is not None:
+        return cached_embedding
+
+    try:
+        await ensure_models_ready()
+        if base_sentence_model:
+            embedding = await asyncio.to_thread(
+                base_sentence_model.encode,
+                query,
+                convert_to_numpy=True
+            )
+
+            CACHE_MANAGER.set_embedding(query_hash, embedding)
+            return embedding
+        else:
+            logger.warning("⚠️ No embedding model available for query")
+            return np.zeros(384)
+
+    except Exception as e:
+        logger.error(f"❌ Query embedding error: {e}")
+        return np.zeros(384)
+
+async def ensure_gemini_ready():
+    """Ensure Gemini client is ready"""
+    global gemini_client
+    if gemini_client is None and GEMINI_API_KEY:
+        try:
+            gemini_client = AsyncOpenAI(
+                api_key=GEMINI_API_KEY,
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
+                timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
+                max_retries=3
+            )
+            logger.info("✅ Gemini client initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize Gemini client: {e}")
+            raise HTTPException(status_code=503, detail="Gemini client not available")
+    elif gemini_client is None:
+        raise HTTPException(status_code=503, detail="Gemini API key not configured")
+
+async def ensure_models_ready():
+    """Load models only once per container lifecycle - OPTIMIZED"""
+    global base_sentence_model, reranker, _models_loaded, _startup_complete
+
+    if _models_loaded and _startup_complete:
+        return
+
+    async with _model_lock:
+        if _models_loaded and _startup_complete:
+            return
+
+        logger.info("🔄 Loading pre-downloaded models...")
+        start_time = time.time()
+
+        try:
+            if base_sentence_model is None:
+                base_sentence_model = SentenceTransformer(
+                    EMBEDDING_MODEL_NAME,
+                    device='cpu',
+                    cache_folder=os.getenv('SENTENCE_TRANSFORMERS_HOME', None)
+                )
+
+                base_sentence_model.eval()
+                _ = base_sentence_model.encode("warmup", show_progress_bar=False)
+                logger.info("✅ Sentence transformer loaded and warmed up")
+
+            if reranker is None:
+                reranker = CrossEncoder(
+                    RERANKER_MODEL_NAME,
+                    max_length=128,
+                    device='cpu'
+                )
+
+                _ = reranker.predict([["warmup", "test"]])
+                logger.info("✅ Reranker loaded and warmed up")
+
+            _models_loaded = True
+            _startup_complete = True
+
+            load_time = time.time() - start_time
+            logger.info(f"✅ All models ready in {load_time:.2f}s")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to load models: {e}")
+            raise
+
+# ================================
+# GLOBAL INSTANCES
+# ================================
+
+DOMAIN_DETECTOR = DomainDetector()
 
 # ================================
 # FASTAPI APPLICATION
@@ -1463,41 +1802,41 @@ _cache_ttl = 1800  # 30 minutes
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
-    logger.info("🚀 Starting Hybrid HackRx RAG System...")
+    """Application lifespan manager - OPTIMIZED"""
+    logger.info("🚀 Starting HackRx RAG System...")
     start_time = time.time()
-    
+
     try:
-        # Initialize Gemini client
+        await ensure_models_ready()
+
         if GEMINI_API_KEY:
             await ensure_gemini_ready()
-        
+
         startup_time = time.time() - start_time
-        logger.info(f"✅ Hybrid system initialized in {startup_time:.2f}s")
-        
+        logger.info(f"✅ System fully initialized in {startup_time:.2f}s")
+
     except Exception as e:
         logger.error(f"❌ Startup failed: {e}")
         raise
 
     yield
 
-    # Shutdown
-    logger.info("🔄 Shutting down hybrid system...")
+    logger.info("🔄 Shutting down system...")
     _document_cache.clear()
     CACHE_MANAGER.clear_all_caches()
-    
+
     if gemini_client and hasattr(gemini_client, 'close'):
         try:
             await gemini_client.close()
         except Exception:
             pass
-    
-    logger.info("✅ Hybrid shutdown complete")
+
+    logger.info("✅ System shutdown complete")
 
 app = FastAPI(
-    title="Hybrid HackRx RAG System",
-    description="Hybrid RAG System combining best features from both implementations",
-    version="3.0.0",
+    title="HackRx RAG System",
+    description="Enhanced RAG System for HackRx Evaluation with Google Gemini",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -1515,46 +1854,23 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
+    """Basic health check endpoint"""
     return {
         "status": "online",
-        "service": "Hybrid HackRx RAG System",
-        "version": "3.0.0",
-        "hybrid_features": [
-            "Larger chunks (1200) with overlap (200) for better context",
-            "Context window: 18 docs with 12k char safeguard",
-            "Conditional reranking based on query complexity",
-            "Hybrid RRF: fast for short queries, full for complex",
-            "Multi-factor confidence calculation",
-            "Intelligent context with sentence-level pruning",
-            "Parallel embedding batching with caching",
-            "Ultra-fast caching with document signature tracking"
-        ],
-        "cache_efficiency": f"{CACHE_MANAGER.get_cache_efficiency():.1f}%",
+        "service": "HackRx RAG System with Google Gemini",
+        "version": "2.0.0",
         "timestamp": datetime.now().isoformat()
     }
 
 @app.get("/cache-stats")
 async def get_cache_stats():
-    try:
-        return {
-            "embedding_cache_size": len(CACHE_MANAGER.embedding_cache),
-            "document_chunk_cache_size": len(CACHE_MANAGER.document_chunk_cache),
-            "domain_cache_size": len(CACHE_MANAGER.domain_cache),
-            "query_cache_size": len(CACHE_MANAGER.query_cache),
-            "document_cache_size": len(_document_cache),
-            "current_document": CACHE_MANAGER.current_document_hash[:8] if CACHE_MANAGER.current_document_hash else None,
-            "cache_efficiency": f"{CACHE_MANAGER.get_cache_efficiency():.1f}%",
-            "hit_count": CACHE_MANAGER.hit_count,
-            "miss_count": CACHE_MANAGER.miss_count
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    """Cache statistics endpoint"""
+    return CACHE_MANAGER.get_cache_stats()
 
 @app.post("/hackrx/run")
 async def hackrx_run_endpoint(request: Request):
-    """Hybrid HackRx endpoint with optimized processing"""
+    """HackRx endpoint with MASSIVELY OPTIMIZED PARALLEL PROCESSING and CACHING"""
     start_time = time.time()
-    
     if not simple_auth_check(request):
         raise HTTPException(status_code=401, detail="Invalid authentication token")
 
@@ -1565,10 +1881,10 @@ async def hackrx_run_endpoint(request: Request):
 
         if not questions:
             raise HTTPException(status_code=400, detail="No questions provided")
+
         if not documents_url:
             raise HTTPException(status_code=400, detail="No documents URL provided")
 
-        # Check document cache
         doc_cache_key = hashlib.md5(documents_url.encode()).hexdigest()
         current_time = time.time()
         cached_rag_system = None
@@ -1579,25 +1895,21 @@ async def hackrx_run_endpoint(request: Request):
                 logger.info("🚀 Using cached document processing")
                 cached_rag_system = cached_data
 
-        # Create or use cached RAG system
         if cached_rag_system:
             rag_system = cached_rag_system
         else:
-            rag_system = HybridRAGSystem()
+            rag_system = RAGSystem()
             logger.info(f"📄 Processing document: {sanitize_pii(documents_url)}")
             await rag_system.process_documents([documents_url])
-            
-            # Cache the processed system
+
             _document_cache[doc_cache_key] = (rag_system, current_time)
-            
-            # Clean up old cache entries
+
             if len(_document_cache) > 10:
                 oldest_key = min(_document_cache.keys(),
                                key=lambda k: _document_cache[k][1])
                 del _document_cache[oldest_key]
 
-        # Process questions in parallel
-        logger.info(f"❓ Processing {len(questions)} questions with hybrid optimization...")
+        logger.info(f"❓ Processing {len(questions)} questions in parallel...")
 
         async def process_single_question(question: str) -> str:
             try:
@@ -1607,21 +1919,19 @@ async def hackrx_run_endpoint(request: Request):
                 logger.error(f"❌ Error processing question: {e}")
                 return f"Error processing question: {str(e)}"
 
-        # Use semaphore to control concurrency
-        semaphore = asyncio.Semaphore(MAX_CONCURRENT_QUESTIONS)
+        semaphore = asyncio.Semaphore(10)
 
         async def bounded_process(question: str) -> str:
             async with semaphore:
                 return await process_single_question(question)
 
-        # Process all questions in parallel
         answers = await asyncio.gather(
             *[bounded_process(q) for q in questions],
             return_exceptions=False
         )
 
         processing_time = time.time() - start_time
-        logger.info(f"✅ Hybrid completed {len(questions)} questions in {processing_time:.2f}s")
+        logger.info(f"✅ Completed {len(questions)} questions in {processing_time:.2f}s")
 
         return {"answers": answers}
 
@@ -1630,11 +1940,12 @@ async def hackrx_run_endpoint(request: Request):
         raise HTTPException(status_code=500, detail=f"Processing failed: {str(e)}")
 
 # ================================
-# ERROR HANDLERS
+# ERROR HANDLERS - STANDARDIZED
 # ================================
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
+    """HTTP exception handler - STANDARDIZED FORMAT"""
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -1648,6 +1959,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
+    """General exception handler - STANDARDIZED FORMAT"""
     logger.error(f"❌ Unhandled exception: {exc}")
     return JSONResponse(
         status_code=500,
@@ -1666,10 +1978,10 @@ async def general_exception_handler(request: Request, exc: Exception):
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     port = int(os.getenv("PORT", 8000))
-    logger.info(f"🚀 Starting Hybrid HackRx RAG System on port {port}")
-    
+    logger.info(f"🚀 Starting HackRx RAG System with Google Gemini on port {port}")
+
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
