@@ -42,14 +42,7 @@ COPY --chown=appuser:appuser . .
 USER appuser
 
 # Pre-download models (this will be cached in the Docker layer)
-RUN python -c "
-from sentence_transformers import SentenceTransformer
-import os
-os.makedirs('/app/models', exist_ok=True)
-model = SentenceTransformer('all-MiniLM-L6-v2')
-model.save('/app/models/all-MiniLM-L6-v2')
-print('Model downloaded successfully')
-"
+RUN python -c "from sentence_transformers import SentenceTransformer; import os; os.makedirs('/app/models', exist_ok=True); model = SentenceTransformer('all-MiniLM-L6-v2'); model.save('/app/models/all-MiniLM-L6-v2'); print('Model downloaded successfully')"
 
 # Expose port
 EXPOSE 8000
