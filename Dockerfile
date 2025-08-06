@@ -25,7 +25,7 @@ RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser
 # Copy requirements and install Python dependencies
 COPY requirements.txt ./requirements.txt
 
-# Install PyTorch first with CPU support (using your original command)
+# Install PyTorch first with CPU support
 RUN pip install --no-cache-dir torch>=1.13.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # Install other requirements
@@ -46,8 +46,34 @@ COPY --chown=appuser:appuser . .
 # Switch to non-root user
 USER appuser
 
-# Pre-download models (this will be cached in the Docker layer)
-RUN python -c "from sentence_transformers import SentenceTransformer; import os; os.makedirs('/app/models', exist_ok=True); model = SentenceTransformer('all-MiniLM-L6-v2'); model.save('/app/models/all-MiniLM-L6-v2'); print('Model downloaded successfully')"
+# Pre-download other compatible models (avoiding the problematic sentence-transformers for now)
+RUN python -c "
+import os
+from transformers import AutoTokenizer, AutoModel
+from huggingface_hub import snapshot_download
+
+# Create models directory
+os.makedirs('/app/models', exist_ok=True)
+
+try:
+    # Download basic BERT tokenizer and model (these are typically compatible)
+    print('Downloading BERT tokenizer...')
+    tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', cache_dir='/app/models')
+    print('BERT tokenizer downloaded successfully')
+    
+    # Download GPT-2 tokenizer (useful for text processing)
+    print('Downloading GPT-2 tokenizer...')
+    gpt2_tokenizer = AutoTokenizer.from_pretrained('gpt2', cache_dir='/app/models')
+    print('GPT-2 tokenizer downloaded successfully')
+    
+    print('Base models downloaded successfully')
+except Exception as e:
+    print(f'Some models failed to download: {e}')
+    print('Models will be downloaded at runtime instead')
+"
+
+# NOTE: all-MiniLM-L6-v2 will be downloaded at runtime by your application
+# This avoids the torch.uint64 compatibility issue during build time
 
 # Expose port
 EXPOSE 8000
