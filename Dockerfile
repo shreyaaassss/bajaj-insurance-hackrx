@@ -33,6 +33,12 @@ RUN mkdir -p /app/.cache/sentence_transformers /app/.cache/transformers
 
 # Copy requirements first for better caching
 COPY requirements.txt ./requirements.txt
+
+# FIX: Install compatible PyTorch version first
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir torch>=1.13.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining requirements
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 # PRE-DOWNLOAD MODELS (OPTIMIZED VERSION)
