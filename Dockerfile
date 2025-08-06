@@ -32,14 +32,26 @@ WORKDIR /app
 # Create cache directories for better model caching
 RUN mkdir -p /app/.cache/huggingface /app/.cache/sentence_transformers /app/.cache/transformers
 
-# Copy requirements first for better caching
+# CRITICAL FIX: Install PyTorch ecosystem FIRST with exact versions
+RUN pip install --no-cache-dir --upgrade pip
+
+# Install PyTorch, torchvision, and torchaudio with compatible versions
+RUN pip install --no-cache-dir \
+    torch==2.1.2+cpu \
+    torchvision==0.16.2+cpu \
+    torchaudio==2.1.2+cpu \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install core ML libraries that depend on PyTorch
+RUN pip install --no-cache-dir \
+    transformers==4.36.2 \
+    sentence-transformers==2.2.2 \
+    safetensors==0.4.1
+
+# Copy requirements (modified to exclude conflicting packages)
 COPY requirements.txt ./requirements.txt
 
-# CRITICAL FIX: Install compatible PyTorch version FIRST
-RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir torch>=2.0.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
-
-# Install remaining requirements
+# Install remaining requirements (excluding PyTorch ecosystem)
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
 # FIXED PRE-DOWNLOAD MODELS (Proper syntax and error handling)
@@ -71,7 +83,7 @@ USER app
 # Create necessary directories
 RUN mkdir -p uploads
 
-# FIXED Health check endpoint (your app uses "/" not "/health")
+# Health check (your app uses "/" endpoint)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
