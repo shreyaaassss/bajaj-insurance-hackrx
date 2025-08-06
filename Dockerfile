@@ -25,8 +25,8 @@ RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser
 # Copy requirements and install Python dependencies
 COPY requirements.txt ./requirements.txt
 
-# Install PyTorch first with CPU support
-RUN pip install --no-cache-dir torch>=1.13.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch with compatible version
+RUN pip install --no-cache-dir torch==2.2.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # Install other requirements
 RUN pip install --no-cache-dir -r requirements.txt
@@ -45,9 +45,6 @@ COPY --chown=appuser:appuser . .
 
 # Switch to non-root user
 USER appuser
-
-# Pre-download compatible models (single-line format to avoid parsing issues)
-RUN python -c "import os; from transformers import AutoTokenizer; os.makedirs('/app/models', exist_ok=True); tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased', cache_dir='/app/models'); print('BERT tokenizer downloaded successfully')"
 
 # Expose port
 EXPOSE 8000
