@@ -25,8 +25,8 @@ RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser
 # Copy requirements and install Python dependencies
 COPY requirements.txt ./requirements.txt
 
-# Install PyTorch first with CPU support
-RUN pip install --no-cache-dir torch==2.1.2 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# Install PyTorch first with CPU support (using your original command)
+RUN pip install --no-cache-dir torch>=1.13.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
 # Install other requirements
 RUN pip install --no-cache-dir -r requirements.txt
