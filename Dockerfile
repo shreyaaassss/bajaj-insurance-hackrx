@@ -46,16 +46,16 @@ COPY --chown=appuser:appuser . .
 # Switch to non-root user
 USER appuser
 
-# Expose port
-EXPOSE 8000
+# Expose port (Cloud Run will set PORT env var to 8080)
+EXPOSE 8080
 
-# Health check
+# Health check (updated to use PORT env var)
 HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
 
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV MODEL_PATH=/app/models
 
-# Run the application
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
+# Run the application (updated to use PORT env var)
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]
