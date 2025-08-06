@@ -1,4 +1,4 @@
-# Use Python 3.11 slim image
+# Use Python 3.11 slim for better compatibility
 FROM python:3.11-slim
 
 # Install system dependencies
@@ -9,53 +9,75 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libglib2.0-0 \
     libgomp1 \
     libmagic1 \
-    libmagic-dev \
     tesseract-ocr \
     tesseract-ocr-eng \
     poppler-utils \
     && rm -rf /var/lib/apt/lists/* \
     && apt-get clean
 
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
+ENV PORT=8080
+
+# Set model cache environment
+ENV SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers
+ENV TRANSFORMERS_CACHE=/app/.cache/transformers
+
 # Set working directory
 WORKDIR /app
 
-# Create non-root user with home directory
-RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser
+# Create cache directories
+RUN mkdir -p /app/.cache/sentence_transformers /app/.cache/transformers
 
-# Copy requirements and install Python dependencies
+# Copy requirements first for better caching
 COPY requirements.txt ./requirements.txt
 
-# Install PyTorch with compatible version
-RUN pip install --no-cache-dir torch==2.2.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# FIX: Install compatible PyTorch version first
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir torch>=1.13.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
 
-# Install other requirements
-RUN pip install --no-cache-dir -r requirements.txt
+# Install remaining requirements
+RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# Create necessary directories and set proper ownership
-RUN mkdir -p /app/uploads /app/cache /app/models /home/appuser/.cache && \
-    chown -R appuser:appuser /app /home/appuser
-
-# Set environment variables for cache directories
-ENV TRANSFORMERS_CACHE=/app/models
-ENV HF_HOME=/app/models
-ENV SENTENCE_TRANSFORMERS_HOME=/app/models
+# PRE-DOWNLOAD MODELS (OPTIMIZED VERSION)
+RUN python -c "\
+import os; \
+os.environ['ANONYMIZED_TELEMETRY'] = 'False'; \
+os.environ['CHROMA_TELEMETRY'] = 'False'; \
+os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'; \
+os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'; \
+os.environ['TRANSFORMERS_OFFLINE'] = '0'; \
+print('🚀 Downloading optimized models...'); \
+from sentence_transformers import SentenceTransformer, CrossEncoder; \
+import time; \
+start = time.time(); \
+print('📥 Loading SentenceTransformer with cache optimization...'); \
+model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu'); \
+model.save('/app/.cache/sentence_transformers/all-MiniLM-L6-v2'); \
+print('📥 Loading CrossEncoder with cache optimization...'); \
+reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cpu', max_length=256); \
+print(f'✅ All models downloaded in {time.time()-start:.1f}s'); \
+"
 
 # Copy application code
-COPY --chown=appuser:appuser . .
+COPY main.py ./main.py
 
-# Switch to non-root user
-USER appuser
+# Create non-root user
+RUN useradd --create-home --shell /bin/bash app
+RUN chown -R app:app /app
+USER app
 
-# Expose port (Cloud Run will set PORT env var to 8080)
+# Create necessary directories
+RUN mkdir -p uploads
+
+# Health check with proper timeout
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD curl -f http://localhost:8080/ || exit 1
+
+# Expose port
 EXPOSE 8080
 
-# Health check (updated to use PORT env var)
-HEALTHCHECK --interval=30s --timeout=30s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8080}/health || exit 1
-
-# Set environment variables
-ENV PYTHONPATH=/app
-ENV MODEL_PATH=/app/models
-
-# Run the application (updated to use PORT env var)
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8080} --workers 1"]
+# Start the application
+CMD ["python", "main.py"]
