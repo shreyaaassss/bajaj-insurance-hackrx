@@ -35,7 +35,7 @@ RUN mkdir -p /app/.cache/sentence_transformers /app/.cache/transformers /app/.ca
 # Copy requirements first for better caching
 COPY requirements.txt ./
 
-# FIX: Install pip and compatible PyTorch version first
+# Install pip and compatible PyTorch version first
 RUN pip install --no-cache-dir --upgrade pip
 
 # Install PyTorch FIRST with specific compatible version
@@ -44,31 +44,32 @@ RUN pip install --no-cache-dir torch==2.0.1 torchvision torchaudio --index-url h
 # Install remaining requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
-# PRE-DOWNLOAD MODELS with error handling
-RUN python -c "\
-import os; \
-os.environ['ANONYMIZED_TELEMETRY'] = 'False'; \
-os.environ['CHROMA_TELEMETRY'] = 'False'; \
-os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'; \
-os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'; \
-os.environ['TRANSFORMERS_OFFLINE'] = '0'; \
-print('🚀 Downloading optimized models...'); \
-try: \
-    from sentence_transformers import SentenceTransformer, CrossEncoder; \
-    import time; \
-    start = time.time(); \
-    print('📥 Loading SentenceTransformer...'); \
-    model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu'); \
-    print('💾 Saving SentenceTransformer to cache...'); \
-    model.save('/app/.cache/sentence_transformers/all-MiniLM-L6-v2'); \
-    print('📥 Loading CrossEncoder...'); \
-    reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cpu', max_length=256); \
-    print(f'✅ All models downloaded in {time.time()-start:.1f}s'); \
-except Exception as e: \
-    print(f'❌ Model download failed: {e}'); \
-    import sys; \
-    sys.exit(1); \
-"
+# Create a separate Python script for model downloading
+RUN echo 'import os\n\
+os.environ["ANONYMIZED_TELEMETRY"] = "False"\n\
+os.environ["CHROMA_TELEMETRY"] = "False"\n\
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"\n\
+os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"\n\
+os.environ["TRANSFORMERS_OFFLINE"] = "0"\n\
+print("🚀 Downloading optimized models...")\n\
+try:\n\
+    from sentence_transformers import SentenceTransformer, CrossEncoder\n\
+    import time\n\
+    start = time.time()\n\
+    print("📥 Loading SentenceTransformer...")\n\
+    model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")\n\
+    print("💾 Saving SentenceTransformer to cache...")\n\
+    model.save("/app/.cache/sentence_transformers/all-MiniLM-L6-v2")\n\
+    print("📥 Loading CrossEncoder...")\n\
+    reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device="cpu", max_length=256)\n\
+    print(f"✅ All models downloaded in {time.time()-start:.1f}s")\n\
+except Exception as e:\n\
+    print(f"❌ Model download failed: {e}")\n\
+    import sys\n\
+    sys.exit(1)\n' > download_models.py
+
+# Run the model download script
+RUN python download_models.py && rm download_models.py
 
 # Copy application code
 COPY main.py ./
