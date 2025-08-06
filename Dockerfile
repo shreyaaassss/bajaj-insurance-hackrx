@@ -19,8 +19,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Set working directory
 WORKDIR /app
 
-# Create non-root user
-RUN groupadd -r appuser && useradd -r -g appuser appuser
+# Create non-root user with home directory
+RUN groupadd -r appuser && useradd -r -g appuser -d /home/appuser -m appuser
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt ./requirements.txt
@@ -31,9 +31,14 @@ RUN pip install --no-cache-dir torch==2.1.2 torchvision torchaudio --index-url h
 # Install other requirements
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create necessary directories
-RUN mkdir -p /app/uploads /app/cache /app/models && \
-    chown -R appuser:appuser /app
+# Create necessary directories and set proper ownership
+RUN mkdir -p /app/uploads /app/cache /app/models /home/appuser/.cache && \
+    chown -R appuser:appuser /app /home/appuser
+
+# Set environment variables for cache directories
+ENV TRANSFORMERS_CACHE=/app/models
+ENV HF_HOME=/app/models
+ENV SENTENCE_TRANSFORMERS_HOME=/app/models
 
 # Copy application code
 COPY --chown=appuser:appuser . .
