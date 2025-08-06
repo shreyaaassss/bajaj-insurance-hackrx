@@ -34,14 +34,14 @@ RUN mkdir -p /app/.cache/sentence_transformers /app/.cache/transformers
 # Copy requirements first for better caching
 COPY requirements.txt ./requirements.txt
 
-# FIX: Install compatible PyTorch version first
+# FIXED: Install compatible PyTorch versions
 RUN pip install --no-cache-dir --upgrade pip
-RUN pip install --no-cache-dir torch>=1.13.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+RUN pip install --no-cache-dir torch==2.3.1 torchvision==0.18.1 torchaudio==2.3.1 --index-url https://download.pytorch.org/whl/cpu
 
 # Install remaining requirements
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# PRE-DOWNLOAD MODELS (OPTIMIZED VERSION)
+# PRE-DOWNLOAD MODELS (UPDATED VERSION)
 RUN python -c "\
 import os; \
 os.environ['ANONYMIZED_TELEMETRY'] = 'False'; \
@@ -61,7 +61,7 @@ reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cpu', ma
 print(f'✅ All models downloaded in {time.time()-start:.1f}s'); \
 "
 
-# Copy application code
+# Copy application code (FIXED: Use correct filename)
 COPY main.py ./main.py
 
 # Create non-root user
