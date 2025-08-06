@@ -21,55 +21,44 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONIOENCODING=utf-8
 ENV PORT=8080
 
-# CRITICAL FIX: Set model cache environment variables
-ENV HF_HOME=/app/.cache/huggingface
+# Set model cache environment
 ENV SENTENCE_TRANSFORMERS_HOME=/app/.cache/sentence_transformers
 ENV TRANSFORMERS_CACHE=/app/.cache/transformers
 
 # Set working directory
 WORKDIR /app
 
-# Create cache directories for better model caching
-RUN mkdir -p /app/.cache/huggingface /app/.cache/sentence_transformers /app/.cache/transformers
+# Create cache directories
+RUN mkdir -p /app/.cache/sentence_transformers /app/.cache/transformers
 
-# CRITICAL FIX: Install PyTorch ecosystem FIRST with exact versions
-RUN pip install --no-cache-dir --upgrade pip
-
-# Install PyTorch, torchvision, and torchaudio with compatible versions
-RUN pip install --no-cache-dir \
-    torch==2.1.2+cpu \
-    torchvision==0.16.2+cpu \
-    torchaudio==2.1.2+cpu \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# Install core ML libraries that depend on PyTorch
-RUN pip install --no-cache-dir \
-    transformers==4.36.2 \
-    sentence-transformers==2.2.2 \
-    safetensors==0.4.1
-
-# Copy requirements (modified to exclude conflicting packages)
+# Copy requirements first for better caching
 COPY requirements.txt ./requirements.txt
 
-# Install remaining requirements (excluding PyTorch ecosystem)
+# FIX: Install compatible PyTorch version first
+RUN pip install --no-cache-dir --upgrade pip
+RUN pip install --no-cache-dir torch>=1.13.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+
+# Install remaining requirements
 RUN pip install --no-cache-dir --upgrade -r requirements.txt
 
-# FIXED PRE-DOWNLOAD MODELS (Proper syntax and error handling)
+# PRE-DOWNLOAD MODELS (OPTIMIZED VERSION)
 RUN python -c "\
 import os; \
 os.environ['ANONYMIZED_TELEMETRY'] = 'False'; \
 os.environ['CHROMA_TELEMETRY'] = 'False'; \
 os.environ['HF_HUB_DISABLE_PROGRESS_BARS'] = '1'; \
 os.environ['HF_HUB_DISABLE_TELEMETRY'] = '1'; \
+os.environ['TRANSFORMERS_OFFLINE'] = '0'; \
 print('🚀 Downloading optimized models...'); \
 from sentence_transformers import SentenceTransformer, CrossEncoder; \
 import time; \
 start = time.time(); \
-print('📥 Loading SentenceTransformer...'); \
-model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu', cache_folder='/app/.cache/sentence_transformers'); \
-print('📥 Loading CrossEncoder...'); \
-reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cpu', max_length=512); \
-print(f'✅ All models downloaded successfully in {time.time()-start:.1f}s'); \
+print('📥 Loading SentenceTransformer with cache optimization...'); \
+model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu'); \
+model.save('/app/.cache/sentence_transformers/all-MiniLM-L6-v2'); \
+print('📥 Loading CrossEncoder with cache optimization...'); \
+reranker = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', device='cpu', max_length=256); \
+print(f'✅ All models downloaded in {time.time()-start:.1f}s'); \
 "
 
 # Copy application code
@@ -83,7 +72,7 @@ USER app
 # Create necessary directories
 RUN mkdir -p uploads
 
-# Health check (your app uses "/" endpoint)
+# Health check with proper timeout
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD curl -f http://localhost:8080/ || exit 1
 
