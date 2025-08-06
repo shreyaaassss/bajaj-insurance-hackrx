@@ -38,37 +38,67 @@ COPY requirements.txt ./
 # Install pip and compatible PyTorch version first
 RUN pip install --no-cache-dir --upgrade pip
 
-# Install PyTorch FIRST with specific compatible version
-RUN pip install --no-cache-dir torch==2.0.1 torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# CRITICAL FIX: Install PyTorch 1.13.1 explicitly first
+RUN pip install --no-cache-dir torch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 --index-url https://download.pytorch.org/whl/cpu
 
-# Install remaining requirements
+# Install remaining requirements (excluding torch to avoid conflicts)
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create a separate Python script for model downloading
+# Create a Python script for model downloading with better error handling
 RUN echo 'import os\n\
+import sys\n\
+\n\
+# Set environment variables\n\
 os.environ["ANONYMIZED_TELEMETRY"] = "False"\n\
 os.environ["CHROMA_TELEMETRY"] = "False"\n\
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"\n\
 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"\n\
 os.environ["TRANSFORMERS_OFFLINE"] = "0"\n\
+\n\
 print("🚀 Downloading optimized models...")\n\
+\n\
 try:\n\
+    # Test PyTorch first\n\
+    import torch\n\
+    print(f"✅ PyTorch version: {torch.__version__}")\n\
+    \n\
+    # Test transformers\n\
+    import transformers\n\
+    print(f"✅ Transformers version: {transformers.__version__}")\n\
+    \n\
+    # Import sentence transformers\n\
     from sentence_transformers import SentenceTransformer, CrossEncoder\n\
     import time\n\
+    \n\
     start = time.time()\n\
     print("📥 Loading SentenceTransformer...")\n\
     model = SentenceTransformer("all-MiniLM-L6-v2", device="cpu")\n\
     print("💾 Saving SentenceTransformer to cache...")\n\
     model.save("/app/.cache/sentence_transformers/all-MiniLM-L6-v2")\n\
+    \n\
     print("📥 Loading CrossEncoder...")\n\
     reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2", device="cpu", max_length=256)\n\
-    print(f"✅ All models downloaded in {time.time()-start:.1f}s")\n\
+    \n\
+    print(f"✅ All models downloaded successfully in {time.time()-start:.1f}s")\n\
+    \n\
+except ImportError as e:\n\
+    print(f"❌ Import error: {e}")\n\
+    print("Available packages:")\n\
+    import pkg_resources\n\
+    installed_packages = [d.project_name for d in pkg_resources.working_set]\n\
+    for pkg in ["torch", "transformers", "sentence-transformers"]:\n\
+        status = "✅" if pkg in installed_packages else "❌"\n\
+        print(f"  {status} {pkg}")\n\
+    sys.exit(1)\n\
+    \n\
 except Exception as e:\n\
     print(f"❌ Model download failed: {e}")\n\
-    import sys\n\
+    print(f"Error type: {type(e).__name__}")\n\
+    import traceback\n\
+    traceback.print_exc()\n\
     sys.exit(1)\n' > download_models.py
 
-# Run the model download script
+# Run the model download script with better error reporting
 RUN python download_models.py && rm download_models.py
 
 # Copy application code
