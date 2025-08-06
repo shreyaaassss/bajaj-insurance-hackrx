@@ -13,10 +13,10 @@ langchain-text-splitters==0.0.1
 PyMuPDF==1.26.3
 docx2txt==0.8
 
-# AI and embeddings (FIXED VERSIONS)
+# AI and embeddings
 sentence-transformers==2.2.2
-transformers==4.35.2
-# PyTorch handled separately in Dockerfile
+transformers==4.36.2
+torch==2.1.2
 openai==1.12.0
 huggingface-hub==0.19.4
 
@@ -40,6 +40,25 @@ cachetools==5.3.2
 # REQUIRED: Enhanced file type detection
 python-magic==0.4.27
 
-# Additional dependencies for compatibility
+# MISSING REQUIREMENTS - ADDED BASED ON CODE ANALYSIS:
+# System monitoring and memory management
 psutil==5.9.6
-safetensors==0.4.0
+
+# Standard library enhancements (usually included but explicit for Docker)
+asyncio
+threading
+collections
+contextlib
+functools
+hashlib
+json
+logging
+os
+re
+sys
+tempfile
+time
+typing
+urllib
+uuid
+datetime
