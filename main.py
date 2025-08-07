@@ -91,7 +91,7 @@ logger = logging.getLogger(__name__)
 
 # Fixed optimal configuration
 HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
-GEMINI_API_KEY = 'AIzaSyC7S0IKMVnr0E6E57Ojt5p8aiM0GCfGs34'
+GEMINI_API_KEY = 'AIzaSyCW73sAHC1f4ZAMNoRABMjyGBwci1CMCWc'
 
 # ENHANCED CONFIGURATION WITH ACCURACY IMPROVEMENTS
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -1376,7 +1376,7 @@ Provide a direct, accurate answer."""
             response = await asyncio.wait_for(
                 gemini_client.chat.completions.create(
                     messages=[{"role": "user", "content": system_prompt}],
-                    model="gemini-2.5-pro",
+                    model="gemini-2.0-flash",
                     temperature=0.1,
                     max_tokens=250
                 ),
@@ -1663,7 +1663,7 @@ Please provide a detailed, accurate answer based on the context above. Focus on 
             response = await asyncio.wait_for(
                 gemini_client.chat.completions.create(
                     messages=messages,
-                    model="gemini-2.5-pro",
+                    model="gemini-2.0-flash",
                     temperature=0.1,
                     max_tokens=1000  # Slightly increased for better responses
                 ),
