@@ -352,8 +352,8 @@ class QuestionBatcher:
     """Smart question batching with optimized processing"""
     
     def __init__(self):
-        self.max_batch_size = 5
-        self.batch_timeout = 2.0  # seconds
+        self.max_batch_size = 8
+        self.batch_timeout = 3.0  # seconds
         
     async def process_questions_batch(self, questions: List[str], rag_system) -> List[Dict[str, Any]]:
         """Process multiple questions with intelligent batching"""
@@ -416,7 +416,7 @@ class QuestionBatcher:
         try:
             results = await asyncio.wait_for(
                 asyncio.gather(*tasks, return_exceptions=True),
-                timeout=60.0  # 1 minute timeout for batch
+                timeout=120  # 1 minute timeout for batch
             )
             
             # Handle any exceptions in results
@@ -2286,8 +2286,10 @@ async def hackrx_run_endpoint(request: Request):
                     )
         
         # Validate questions
-        if len(questions) > 20:
-            raise HTTPException(status_code=400, detail="Too many questions (max 20)")
+# Validate questions  
+        if len(questions) > 50:  # Increased from 20 to 50
+            raise HTTPException(status_code=400, detail="Too many questions (max 50)")
+
         
         for question in questions:
             if not question.strip():
