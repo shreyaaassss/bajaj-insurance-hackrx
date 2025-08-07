@@ -1376,7 +1376,7 @@ Provide a direct, accurate answer."""
             response = await asyncio.wait_for(
                 gemini_client.chat.completions.create(
                     messages=[{"role": "user", "content": system_prompt}],
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-pro",
                     temperature=0.1,
                     max_tokens=250
                 ),
@@ -1663,7 +1663,7 @@ Please provide a detailed, accurate answer based on the context above. Focus on 
             response = await asyncio.wait_for(
                 gemini_client.chat.completions.create(
                     messages=messages,
-                    model="gemini-2.5-flash",
+                    model="gemini-2.5-pro",
                     temperature=0.1,
                     max_tokens=1000  # Slightly increased for better responses
                 ),
