@@ -7,7 +7,7 @@ import json
 import tempfile
 import hashlib
 import re
-from typing import List, Dict, Any, Tuple, Optional, Union
+from typing import List, Dict, Any, Tuple, Optional
 from contextlib import asynccontextmanager
 import uuid
 from datetime import datetime
@@ -29,7 +29,6 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-
 import httpx
 
 # Document processing
@@ -87,37 +86,38 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================================
-# CONFIGURATION
+# OPTIMIZED CONFIGURATION FOR ACCURACY & CONCISENESS
 # ================================
 
-# API Configuration
+# Fixed optimal configuration
 HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
 GEMINI_API_KEY = 'AIzaSyC7S0IKMVnr0E6E57Ojt5p8aiM0GCfGs34'
 
-# Model Configuration
+# ENHANCED CONFIGURATION WITH ACCURACY IMPROVEMENTS
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
 RERANKER_MODEL_NAME = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
-# Chunking parameters
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 80
+# ðŸ”¹ OPTIMIZED CONFIGURATION FOR ACCURACY & CONCISENESS
+CHUNK_SIZE = 800  # Slightly reduced from 900
+CHUNK_OVERLAP = 80  # Reduced from 100
 
 # Retrieval parameters
-SEMANTIC_SEARCH_K = 12
-CONTEXT_DOCS = 8
-CONFIDENCE_THRESHOLD = 0.25
+SEMANTIC_SEARCH_K = 12  # Reduced from 15 for better precision
+CONTEXT_DOCS = 8  # Increased from 6
+CONFIDENCE_THRESHOLD = 0.25  # Reduced from 0.3
 
 # Reranking
-BASE_RERANK_TOP_K = 8
-MAX_RERANK_TOP_K = 24
+BASE_RERANK_TOP_K = 8   # Reduced from 10
+MAX_RERANK_TOP_K = 24   # Reduced from 32
 
-# Token management
-MAX_CONTEXT_TOKENS = 6000
-TOKEN_SAFETY_MARGIN = 200
+# Token management for conciseness
+MAX_CONTEXT_TOKENS = 6000  # Reduced from 8000 for more focused context
+TOKEN_SAFETY_MARGIN = 200   # Reduced
+
 MAX_FILE_SIZE_MB = 100
 QUESTION_TIMEOUT = 20.0
 
-# Parallel processing
+# PARALLEL PROCESSING - OPTIMIZED
 OPTIMAL_BATCH_SIZE = 32
 MAX_PARALLEL_BATCHES = 4
 EMBEDDING_TIMEOUT = 60.0
@@ -158,7 +158,7 @@ DOMAIN_KEYWORDS = {
     ]
 }
 
-# Global model state management
+# GLOBAL MODEL STATE MANAGEMENT
 _models_loaded = False
 _model_lock = asyncio.Lock()
 _startup_complete = False
@@ -172,8 +172,16 @@ base_sentence_model = None
 reranker = None
 gemini_client = None
 
+class HackRxRunRequest(BaseModel):
+    documents: str  # Single document URL as string
+    questions: List[str]  # List of questions
+
+class HackRxRunResponse(BaseModel):
+    results: List[Dict[str, Any]]
+
+
 # ================================
-# QUERY ANALYSIS CLASSES
+# ENHANCED QUERY ANALYSIS WITH COMPLEXITY SCORING
 # ================================
 
 class QueryComplexityAnalyzer:
@@ -204,7 +212,7 @@ class QueryComplexityAnalyzer:
         """Enhanced query complexity analysis"""
         query_lower = query.lower().strip()
         
-        # Improved pattern recognition
+        # ðŸ”¹ IMPROVED: Better pattern recognition
         simple_patterns = [
             r'^what is\s+\w+',
             r'^define\s+\w+',
@@ -227,12 +235,12 @@ class QueryComplexityAnalyzer:
         
         # Additional complexity factors
         has_multiple_questions = query.count('?') > 1
-        has_complex_keywords = any(keyword in query_lower for keyword in
-                                   ['comprehensive', 'detailed', 'elaborate', 'in depth'])
+        has_complex_keywords = any(keyword in query_lower for keyword in 
+                                  ['comprehensive', 'detailed', 'elaborate', 'in depth'])
         
         token_count = self._count_tokens(query)
         word_count = len(query.split())
-        
+
         # Calculate complexity score
         complexity_factors = {
             'analytical_keywords': 0.4 if is_analytical else 0.0,
@@ -242,18 +250,18 @@ class QueryComplexityAnalyzer:
             'complex_keywords': 0.1 if has_complex_keywords else 0.0,
             'pattern_penalty': -0.3 if is_simple_pattern else 0.0
         }
-        
+
         complexity_score = sum(complexity_factors.values())
         complexity_score = max(0.0, min(1.0, complexity_score))
-        
-        # Better query type determination
+
+        # ðŸ”¹ IMPROVED: Better query type determination
         if is_simple_pattern and complexity_score < 0.25:
             query_type = 'simple'
         elif is_analytical or complexity_score > 0.65:
             query_type = 'analytical'
         else:
             query_type = 'factual'
-        
+
         return {
             'type': query_type,
             'complexity': complexity_score,
@@ -274,7 +282,7 @@ class QueryComplexityAnalyzer:
         return max(1, int(len(text) / 3.8))
 
 # ================================
-# CHUNK LIMIT CALCULATOR
+# ENHANCED CHUNK LIMIT CALCULATOR
 # ================================
 
 class AdaptiveChunkLimitCalculator:
@@ -285,27 +293,27 @@ class AdaptiveChunkLimitCalculator:
         """Calculate adaptive chunk limit based on domain and complexity"""
         # Base limits by domain
         domain_base_limits = {
-            "legal": 150,
-            "academic": 140,
-            "medical": 130,
-            "technical": 120,
-            "insurance": 110,
-            "financial": 110,
-            "business": 100,
-            "general": 100
+            "legal": 150,     # Legal documents need more context
+            "academic": 140,  # Academic papers need comprehensive context
+            "medical": 130,   # Medical documents need detailed context
+            "technical": 120, # Technical docs need thorough context
+            "insurance": 110, # Insurance policies need detailed context
+            "financial": 110, # Financial documents need context
+            "business": 100,  # Business docs standard context
+            "general": 100    # General documents standard
         }
         
         base_limit = domain_base_limits.get(domain, 100)
         
         # Complexity multipliers
         if complexity > 0.7:
-            multiplier = 1.5
+            multiplier = 1.5   # High complexity needs more chunks
         elif complexity > 0.5:
-            multiplier = 1.25
+            multiplier = 1.25  # Medium complexity needs some more chunks
         elif complexity < 0.3:
-            multiplier = 0.8
+            multiplier = 0.8   # Simple queries need fewer chunks for speed
         else:
-            multiplier = 1.0
+            multiplier = 1.0   # Standard complexity
         
         # Adjust for longform queries
         if query_analysis.get('is_longform', False):
@@ -316,45 +324,45 @@ class AdaptiveChunkLimitCalculator:
         # Enforce reasonable bounds (50 to 250)
         final_limit = max(50, min(250, calculated_limit))
         
-        logger.info(f"📊 Adaptive chunk limit: {final_limit} (domain: {domain}, complexity: {complexity:.2f})")
+        logger.info(f"ðŸ“Š Adaptive chunk limit: {final_limit} (domain: {domain}, complexity: {complexity:.2f})")
         return final_limit
 
 # ================================
-# TOKEN-AWARE CONTEXT PROCESSOR
+# ENHANCED TOKEN-AWARE CONTEXT PROCESSOR
 # ================================
 
 class TokenAwareContextProcessor:
     """Token-aware context processor with budget management"""
     
     def __init__(self):
-        self.max_context_tokens = MAX_CONTEXT_TOKENS
-        self.safety_margin = TOKEN_SAFETY_MARGIN
-        self.available_tokens = self.max_context_tokens - self.safety_margin
+        self.max_context_tokens = MAX_CONTEXT_TOKENS  # Now 6000
+        self.safety_margin = TOKEN_SAFETY_MARGIN      # Now 200
+        self.available_tokens = self.max_context_tokens - self.safety_margin  # 5800 tokens
         
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception:
             self.tokenizer = None
-            logger.warning("⚠️ Token encoder not available, using estimation")
+            logger.warning("âš ï¸ Token encoder not available, using estimation")
 
     def select_context_with_budget(self, documents: List[Document], query: str,
-                                   complexity: float) -> str:
+                                  complexity: float) -> str:
         """Select optimal context within token budget with better relevance scoring"""
         if not documents:
             return ""
-        
-        # Dynamic context parameters based on complexity
+
+        # ðŸ”¹ OPTIMIZATION: Dynamic context parameters based on complexity
         if complexity > 0.7:
-            max_docs = 10
+            max_docs = 10  # Increased for complex queries
             priority_boost = 1.4
         elif complexity > 0.5:
-            max_docs = 8
+            max_docs = 8   # Increased
             priority_boost = 1.2
         else:
             max_docs = 6
             priority_boost = 1.0
-        
-        # Better relevance scoring
+
+        # ðŸ”¹ IMPROVED: Better relevance scoring
         scored_docs = []
         query_lower = query.lower()
         query_words = set(query_lower.split())
@@ -366,28 +374,28 @@ class TokenAwareContextProcessor:
             # Base position score
             base_score = 1.0 / (i + 1)
             
-            # Better query term matching
+            # ðŸ”¹ IMPROVED: Better query term matching
             content_words = set(content_lower.split())
             exact_matches = len(query_words.intersection(content_words))
-            partial_matches = sum(1 for qword in query_words
-                                  if any(qword in cword for cword in content_words))
+            partial_matches = sum(1 for qword in query_words 
+                                if any(qword in cword for cword in content_words))
             
             match_score = (exact_matches * 0.3 + partial_matches * 0.1)
             
             # Boost for content quality and length
             length_score = min(0.25, len(content) / 4000)
             
-            # Boost for constitutional articles/sections
-            article_boost = 0.2 if any(word in content_lower
-                                       for word in ['article', 'section', 'clause', 'amendment']) else 0
+            # ðŸ”¹ NEW: Boost for constitutional articles/sections
+            article_boost = 0.2 if any(word in content_lower 
+                                     for word in ['article', 'section', 'clause', 'amendment']) else 0
             
             total_score = (base_score + match_score + length_score + article_boost) * priority_boost
             scored_docs.append((doc, total_score))
-        
+
         # Sort by score
         scored_docs.sort(key=lambda x: x[1], reverse=True)
-        
-        # Better context selection
+
+        # ðŸ”¹ OPTIMIZATION: Better context selection
         selected_parts = []
         current_tokens = 0
         
@@ -406,12 +414,12 @@ class TokenAwareContextProcessor:
                     if partial_content and len(partial_content) > 100:
                         selected_parts.append(partial_content + "...")
                 break
-        
+
         context = "\n\n".join(selected_parts)
         final_tokens = self._estimate_tokens(context)
         
-        logger.info(f"🎯 Context selected: {final_tokens}/{self.max_context_tokens} tokens "
-                    f"({len(selected_parts)} chunks)")
+        logger.info(f"ðŸŽ¯ Context selected: {final_tokens}/{self.max_context_tokens} tokens "
+                    f"({len(selected_parts)} chunks, avg_score: {sum(s for _, s in scored_docs[:len(selected_parts)])/max(1, len(selected_parts)):.2f})")
         
         return context
 
@@ -449,7 +457,7 @@ class TokenAwareContextProcessor:
         return text[:estimated_chars] if len(text) > estimated_chars else text
 
 # ================================
-# ADAPTIVE RERANKER
+# ENHANCED ADAPTIVE RERANKER
 # ================================
 
 class AdaptiveReranker:
@@ -460,15 +468,19 @@ class AdaptiveReranker:
         """Calculate adaptive reranking parameters"""
         # Base reranking parameters
         if complexity > 0.7 or query_analysis.get('is_longform', False):
+            # High complexity or longform queries need extensive reranking
             rerank_top_k = MAX_RERANK_TOP_K  # 24
             context_docs = 8
         elif complexity > 0.5:
+            # Medium complexity queries need moderate reranking
             rerank_top_k = 20
             context_docs = 6
         elif query_analysis.get('type') == 'analytical':
+            # Analytical queries benefit from more reranking even if not complex
             rerank_top_k = 15
             context_docs = 6
         else:
+            # Simple/factual queries use base parameters for speed
             rerank_top_k = BASE_RERANK_TOP_K  # 8
             context_docs = 5
         
@@ -478,7 +490,7 @@ class AdaptiveReranker:
         }
 
 # ================================
-# CACHING SYSTEM
+# ENHANCED CACHING SYSTEM
 # ================================
 
 class SmartCacheManager:
@@ -491,7 +503,7 @@ class SmartCacheManager:
                 self.document_chunk_cache = cachetools.LRUCache(maxsize=500)
                 self.domain_cache = cachetools.LRUCache(maxsize=1000)
                 self.primary_available = True
-                logger.info("✅ Advanced caching with TTL/LRU enabled")
+                logger.info("âœ… Advanced caching with TTL/LRU enabled")
             else:
                 raise ImportError("cachetools not available")
         except ImportError:
@@ -499,17 +511,17 @@ class SmartCacheManager:
             self.document_chunk_cache = {}
             self.domain_cache = {}
             self.primary_available = False
-            logger.info("📦 Using dict fallback caching (cachetools not available)")
+            logger.info("ðŸ“¦ Using dict fallback caching (cachetools not available)")
         
         self._lock = threading.RLock()
 
     def clear_all_caches(self):
-        """Clear ALL caches when new document is uploaded"""
+        """Clear ALL caches when new document is uploaded - prevents stale answers"""
         with self._lock:
             self.embedding_cache.clear()
             self.document_chunk_cache.clear()
             self.domain_cache.clear()
-            logger.info("🧹 All caches cleared for new document upload")
+        logger.info("ðŸ§¹ All caches cleared for new document upload")
 
     def get_embedding(self, text_hash: str) -> Optional[Any]:
         """Thread-safe embedding cache get"""
@@ -540,6 +552,25 @@ class SmartCacheManager:
         """Thread-safe domain cache set"""
         with self._lock:
             self.domain_cache[cache_key] = result
+
+    def cleanup_if_needed(self):
+        """Only needed for dict fallback - TTL/LRU auto-manage"""
+        if not self.primary_available:
+            with self._lock:
+                if len(self.embedding_cache) > 10000:
+                    items = list(self.embedding_cache.items())[-5000:]
+                    self.embedding_cache.clear()
+                    self.embedding_cache.update(items)
+                
+                if len(self.document_chunk_cache) > 500:
+                    items = list(self.document_chunk_cache.items())[-250:]
+                    self.document_chunk_cache.clear()
+                    self.document_chunk_cache.update(items)
+                
+                if len(self.domain_cache) > 1000:
+                    items = list(self.domain_cache.items())[-500:]
+                    self.domain_cache.clear()
+                    self.domain_cache.update(items)
 
     def get_cache_stats(self) -> Dict[str, Any]:
         """Get cache statistics"""
@@ -573,6 +604,33 @@ class QueryResultCache:
                     del self.cache[key]
             self.cache[cache_key] = answer
 
+# Query Router for simple query detection
+class QueryRouter:
+    def __init__(self):
+        self.simple_patterns = [
+            r'^what is\s+\w+',
+            r'^define\s+\w+',
+            r'^who is\s+\w+',
+            r'^\w+\s+means?$'
+        ]
+
+    def is_simple_query(self, query: str) -> bool:
+        """Detect queries that need minimal context"""
+        query_lower = query.lower().strip()
+        
+        # Pattern matching for simple queries
+        for pattern in self.simple_patterns:
+            if re.match(pattern, query_lower):
+                return True
+        
+        # Word count and complexity heuristics
+        words = query.split()
+        return (
+            len(words) <= 6 and
+            not any(word in query_lower for word in ['compare', 'analyze', 'explain', 'difference']) and
+            query.count('?') <= 1
+        )
+
 # Document State Manager
 class DocumentStateManager:
     def __init__(self):
@@ -585,7 +643,6 @@ class DocumentStateManager:
             'timestamp': time.time(),
             'system_version': '2.0'
         }
-        
         return hashlib.sha256(json.dumps(signature_data, sort_keys=True).encode()).hexdigest()
 
     def should_invalidate_cache(self, new_doc_hash: str) -> bool:
@@ -612,11 +669,24 @@ class MemoryManager:
         if self.should_cleanup():
             import gc
             gc.collect()
-            CACHE_MANAGER.clear_all_caches()
-            logger.info("🧹 Memory cleanup performed")
+            CACHE_MANAGER.cleanup_if_needed()
+            logger.info("ðŸ§¹ Memory cleanup performed")
+
+# Performance Monitor
+class PerformanceMonitor:
+    def __init__(self):
+        self.metrics = defaultdict(list)
+
+    def record_timing(self, operation: str, duration: float):
+        self.metrics[operation].append(duration)
+        if len(self.metrics[operation]) > 100:
+            self.metrics[operation] = self.metrics[operation][-50:]
+
+    def get_average_timing(self, operation: str) -> float:
+        return np.mean(self.metrics.get(operation, [0]))
 
 # ================================
-# TEXT SPLITTER
+# ENHANCED ADAPTIVE TEXT SPLITTER
 # ================================
 
 class AdaptiveTextSplitter:
@@ -632,16 +702,16 @@ class AdaptiveTextSplitter:
         """Split documents with enhanced balanced chunking"""
         if not documents:
             return []
-
+        
         content_hash = self._calculate_content_hash(documents)
-        cache_key = f"chunks_{content_hash}_{detected_domain}_v2"
+        cache_key = f"chunks_{content_hash}_{detected_domain}_v2"  # Updated cache version
         
         cached_chunks = CACHE_MANAGER.get_document_chunks(cache_key)
         if cached_chunks is not None:
-            logger.info(f"📄 Using cached chunks: {len(cached_chunks)} chunks")
+            logger.info(f"ðŸ“„ Using cached chunks: {len(cached_chunks)} chunks")
             return cached_chunks
-
-        # Use improved chunking parameters
+        
+        # ENHANCED: Use improved chunking parameters
         chunk_size, chunk_overlap = self._get_balanced_chunk_params(detected_domain)
         
         all_chunks = []
@@ -650,7 +720,7 @@ class AdaptiveTextSplitter:
                 chunks = self._split_document_balanced(doc, chunk_size, chunk_overlap)
                 all_chunks.extend(chunks)
             except Exception as e:
-                logger.warning(f"⚠️ Error splitting document: {e}")
+                logger.warning(f"âš ï¸ Error splitting document: {e}")
                 chunks = self._simple_split(doc, chunk_size, chunk_overlap)
                 all_chunks.extend(chunks)
         
@@ -660,28 +730,28 @@ class AdaptiveTextSplitter:
         # Cache the results
         CACHE_MANAGER.set_document_chunks(cache_key, all_chunks)
         
-        logger.info(f"📄 Created {len(all_chunks)} balanced chunks (size: {chunk_size}, overlap: {chunk_overlap})")
+        logger.info(f"ðŸ“„ Created {len(all_chunks)} balanced chunks (size: {chunk_size}, overlap: {chunk_overlap})")
         return all_chunks
 
     def _get_balanced_chunk_params(self, detected_domain: str) -> Tuple[int, int]:
         """Get balanced chunking parameters"""
         # Domain-specific adjustments to the base parameters
         domain_adjustments = {
-            "legal": 1.1,
-            "academic": 1.05,
-            "medical": 1.0,
-            "technical": 0.95,
-            "insurance": 1.0,
-            "financial": 1.0,
-            "business": 0.9,
-            "general": 1.0
+            "legal": 1.1,      # Legal documents benefit from slightly larger chunks
+            "academic": 1.05,  # Academic papers need good context
+            "medical": 1.0,    # Medical documents standard
+            "technical": 0.95, # Technical docs can be slightly smaller for precision
+            "insurance": 1.0,  # Insurance standard
+            "financial": 1.0,  # Financial standard
+            "business": 0.9,   # Business docs can be more concise
+            "general": 1.0     # General documents standard
         }
         
         adjustment = domain_adjustments.get(detected_domain, 1.0)
         
         # Apply domain adjustment to base parameters
         adjusted_size = int(CHUNK_SIZE * adjustment)
-        adjusted_overlap = CHUNK_OVERLAP
+        adjusted_overlap = CHUNK_OVERLAP  # Keep overlap consistent
         
         # Ensure reasonable bounds
         adjusted_size = max(600, min(1200, adjusted_size))
@@ -718,7 +788,7 @@ class AdaptiveTextSplitter:
             )
             return splitter.split_documents([document])
         except Exception as e:
-            logger.error(f"❌ Even simple splitting failed: {e}")
+            logger.error(f"âŒ Even simple splitting failed: {e}")
             return [document]
 
     def _calculate_content_hash(self, documents: List[Document]) -> str:
@@ -727,7 +797,7 @@ class AdaptiveTextSplitter:
         return hashlib.sha256(content_sample.encode()).hexdigest()[:16]
 
 # ================================
-# DOCUMENT LOADER
+# UNIFIED LOADER (UNCHANGED)
 # ================================
 
 class UnifiedLoader:
@@ -740,13 +810,13 @@ class UnifiedLoader:
             r'docs\.google\.com/document/d/([a-zA-Z0-9-_]+)',
             r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
             r'drive\.google\.com/open\?id=([a-zA-Z0-9-_]+)',
-            r'[?&]id=([a-zA-Z0-9-_]+)'
+            r'[?&]id=([a-zA-Z0-9-_]+)',  # Generic ID parameter
         ]
         
         self.dropbox_patterns = [
             r'dropbox\.com/s/([a-zA-Z0-9]+)',
             r'dropbox\.com/sh/([a-zA-Z0-9]+)',
-            r'dropbox\.com/scl/fi/([a-zA-Z0-9-_]+)'
+            r'dropbox\.com/scl/fi/([a-zA-Z0-9-_]+)',
         ]
 
     async def load_document(self, source: str) -> List[Document]:
@@ -764,11 +834,11 @@ class UnifiedLoader:
                     'loader_version': '2.0'
                 })
             
-            logger.info(f"✅ Loaded {len(docs)} documents from {sanitize_pii(source)}")
+            logger.info(f"âœ… Loaded {len(docs)} documents from {sanitize_pii(source)}")
             return docs
         
         except Exception as e:
-            logger.error(f"❌ Failed to load {sanitize_pii(source)}: {e}")
+            logger.error(f"âŒ Failed to load {sanitize_pii(source)}: {e}")
             raise
 
     def _is_url(self, source: str) -> bool:
@@ -805,14 +875,14 @@ class UnifiedLoader:
             "Accept-Encoding": "gzip, deflate, br",
             "DNT": "1",
             "Connection": "keep-alive",
-            "Upgrade-Insecure-Requests": "1"
+            "Upgrade-Insecure-Requests": "1",
         }
         
         max_retries = 3
         for attempt in range(max_retries):
             try:
                 timeout = httpx.Timeout(
-                    timeout=180.0,
+                    timeout=180.0,  # Increased for large files
                     connect=20.0,
                     read=180.0,
                     write=60.0,
@@ -825,6 +895,7 @@ class UnifiedLoader:
                     # Handle Google Drive virus scan warning
                     if 'drive.google.com' in download_url and response.status_code == 200:
                         if 'Google Drive - Virus scan warning' in response.text:
+                            # Extract confirm token and retry
                             confirm_match = re.search(r'name="confirm" value="([^"]+)"', response.text)
                             if confirm_match:
                                 confirm_token = confirm_match.group(1)
@@ -850,7 +921,7 @@ class UnifiedLoader:
                     finally:
                         if os.path.exists(temp_path):
                             os.unlink(temp_path)
-            
+                
             except Exception:
                 if attempt == max_retries - 1:
                     raise
@@ -863,15 +934,18 @@ class UnifiedLoader:
             match = re.search(pattern, url)
             if match:
                 file_id = match.group(1)
+                # Use direct download URL that works better
                 return f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
         
         # Additional Google Drive patterns for edge cases
         if 'drive.google.com' in url:
+            # Handle sharing URLs like: https://drive.google.com/open?id=FILE_ID
             open_match = re.search(r'[?&]id=([a-zA-Z0-9-_]+)', url)
             if open_match:
                 file_id = open_match.group(1)
                 return f"https://drive.google.com/uc?export=download&id={file_id}&confirm=t"
             
+            # Handle view URLs like: https://drive.google.com/file/d/FILE_ID/view
             view_match = re.search(r'/file/d/([a-zA-Z0-9-_]+)/view', url)
             if view_match:
                 file_id = view_match.group(1)
@@ -916,6 +990,7 @@ class UnifiedLoader:
             return '.pdf'
         elif b'PK' in content[:10]:
             return '.docx'
+        
         return '.txt'
 
     async def _load_from_file(self, file_path: str) -> List[Document]:
@@ -929,14 +1004,14 @@ class UnifiedLoader:
         if not validate_file_extension(file_path):
             raise ValueError(f"Unsupported file extension: {file_extension}")
         
-        logger.info(f"📄 Loading {file_extension} file ({file_size} bytes): {sanitize_pii(file_path)}")
+        logger.info(f"ðŸ“„ Loading {file_extension} file ({file_size} bytes): {sanitize_pii(file_path)}")
         
         mime_type = None
         if self.mime_detector:
             try:
                 mime_type = magic.from_file(file_path, mime=True)
             except Exception as e:
-                logger.warning(f"⚠️ MIME detection failed: {e}")
+                logger.warning(f"âš ï¸ MIME detection failed: {e}")
         
         docs = None
         loader_used = None
@@ -947,7 +1022,7 @@ class UnifiedLoader:
                 docs = await asyncio.to_thread(loader.load)
                 loader_used = "PyMuPDFLoader"
             except Exception as e:
-                logger.warning(f"⚠️ PyMuPDF failed: {e}")
+                logger.warning(f"âš ï¸ PyMuPDF failed: {e}")
         
         elif ('word' in (mime_type or '') or
               'officedocument' in (mime_type or '') or
@@ -957,7 +1032,7 @@ class UnifiedLoader:
                 docs = await asyncio.to_thread(loader.load)
                 loader_used = "Docx2txtLoader"
             except Exception as e:
-                logger.warning(f"⚠️ DOCX loader failed: {e}")
+                logger.warning(f"âš ï¸ DOCX loader failed: {e}")
         
         elif ('text' in (mime_type or '') or
               file_extension in ['.txt', '.md', '.csv', '.log']):
@@ -970,7 +1045,7 @@ class UnifiedLoader:
                 except UnicodeDecodeError:
                     continue
                 except Exception as e:
-                    logger.warning(f"⚠️ Text loader failed with {encoding}: {e}")
+                    logger.warning(f"âš ï¸ Text loader failed with {encoding}: {e}")
         
         if not docs:
             try:
@@ -978,7 +1053,7 @@ class UnifiedLoader:
                 docs = await asyncio.to_thread(loader.load)
                 loader_used = "TextLoader (fallback)"
             except Exception as e:
-                logger.error(f"❌ All loaders failed: {e}")
+                logger.error(f"âŒ All loaders failed: {e}")
                 raise ValueError(f"Could not load file {file_path}: {str(e)}")
         
         if not docs:
@@ -992,11 +1067,11 @@ class UnifiedLoader:
                 'loader_used': loader_used
             })
         
-        logger.info(f"✅ Loaded {len(docs)} documents using {loader_used}")
+        logger.info(f"âœ… Loaded {len(docs)} documents using {loader_used}")
         return docs
 
 # ================================
-# FAISS VECTOR STORE
+# OPTIMIZED FAISS VECTOR STORE (UNCHANGED)
 # ================================
 
 class OptimizedFAISSVectorStore:
@@ -1016,9 +1091,9 @@ class OptimizedFAISSVectorStore:
         try:
             self.index = faiss.IndexFlatIP(self.dimension)
             self.is_trained = True
-            logger.info("✅ FAISS vector store initialized")
+            logger.info("âœ… FAISS vector store initialized")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize FAISS: {e}")
+            logger.error(f"âŒ Failed to initialize FAISS: {e}")
             raise
 
     async def add_documents_batch(self, documents: List[Document], embeddings: List[np.ndarray]):
@@ -1038,11 +1113,15 @@ class OptimizedFAISSVectorStore:
             self.index.add(all_embeddings)
             self.documents.extend(documents)
             
-            logger.info(f"⚡ Added {len(documents)} documents in single batch")
+            logger.info(f"âš¡ Added {len(documents)} documents in single batch")
         
         except Exception as e:
-            logger.error(f"❌ Batch FAISS add error: {e}")
+            logger.error(f"âŒ Batch FAISS add error: {e}")
             raise
+
+    async def add_documents(self, documents: List[Document], embeddings: List[np.ndarray]):
+        """Wrapper for batch processing"""
+        await self.add_documents_batch(documents, embeddings)
 
     async def similarity_search_with_score(self, query_embedding: np.ndarray, k: int = 10) -> List[Tuple[Document, float]]:
         """Search for similar documents with scores"""
@@ -1054,7 +1133,6 @@ class OptimizedFAISSVectorStore:
             faiss.normalize_L2(query_embedding)
             
             k = min(k, len(self.documents))
-            
             scores, indices = self.index.search(query_embedding, k)
             
             results = []
@@ -1067,7 +1145,7 @@ class OptimizedFAISSVectorStore:
             return results
         
         except Exception as e:
-            logger.error(f"❌ Error in FAISS similarity search: {e}")
+            logger.error(f"âŒ Error in FAISS similarity search: {e}")
             return []
 
     def clear(self):
@@ -1077,7 +1155,7 @@ class OptimizedFAISSVectorStore:
             self.index.reset()
 
 # ================================
-# DOMAIN DETECTOR
+# DOMAIN DETECTOR (UNCHANGED)
 # ================================
 
 class DomainDetector:
@@ -1089,12 +1167,11 @@ class DomainDetector:
             return "general", 0.5
         
         combined_text = ' '.join([doc.page_content[:200] for doc in documents[:5]]).lower()
-        
         cache_key = hashlib.md5(combined_text.encode()).hexdigest()[:16]
         
         cached_result = CACHE_MANAGER.get_domain_result(cache_key)
         if cached_result is not None:
-            logger.info(f"🔍 Using cached domain: {cached_result[0]} (confidence: {cached_result[1]:.2f})")
+            logger.info(f"ðŸ” Using cached domain: {cached_result[0]} (confidence: {cached_result[1]:.2f})")
             return cached_result
         
         try:
@@ -1111,13 +1188,13 @@ class DomainDetector:
                 result = (best_domain, best_score)
                 CACHE_MANAGER.set_domain_result(cache_key, result)
                 
-                logger.info(f"🔍 Domain detected: {best_domain} (confidence: {best_score:.2f})")
+                logger.info(f"ðŸ” Domain detected: {best_domain} (confidence: {best_score:.2f})")
                 return result
             
             return "general", confidence_threshold
         
         except Exception as e:
-            logger.warning(f"⚠️ Domain detection error: {e}")
+            logger.warning(f"âš ï¸ Domain detection error: {e}")
             return "general", confidence_threshold
 
     def _keyword_based_detection(self, combined_text: str) -> Dict[str, float]:
@@ -1136,7 +1213,7 @@ class DomainDetector:
         return domain_scores
 
 # ================================
-# MAIN RAG SYSTEM
+# ENHANCED FAST RAG SYSTEM WITH ACCURACY IMPROVEMENTS
 # ================================
 
 class FastRAGSystem:
@@ -1162,7 +1239,7 @@ class FastRAGSystem:
         self.quick_chunks.clear()
         if self.vector_store:
             self.vector_store.clear()
-        logger.info("🧹 FastRAGSystem cleaned up")
+        logger.info("ðŸ§¹ FastRAGSystem cleaned up")
 
     async def process_documents_fast(self, sources: List[str]) -> Dict[str, Any]:
         """Enhanced document processing with adaptive chunk limits"""
@@ -1171,15 +1248,16 @@ class FastRAGSystem:
         doc_signature = self.doc_state_manager.generate_doc_signature(sources)
         
         if hasattr(self, '_last_doc_signature') and self._last_doc_signature == doc_signature:
-            logger.info("📄 Documents already processed, skipping...")
+            logger.info("ðŸ“„ Documents already processed, skipping...")
             return {"cached": True, "processing_time": 0.001}
         
         if self.doc_state_manager.should_invalidate_cache(doc_signature):
-            logger.info("🧹 New documents detected - invalidating all caches")
+            logger.info("ðŸ§¹ New documents detected - invalidating all caches")
             self.doc_state_manager.invalidate_all_caches()
             self.doc_state_manager.current_doc_hash = doc_signature
             self.doc_state_manager.current_doc_timestamp = time.time()
-            self._last_doc_signature = doc_signature
+        
+        self._last_doc_signature = doc_signature
         
         try:
             # Load documents
@@ -1199,7 +1277,8 @@ class FastRAGSystem:
             all_chunks = self.text_splitter.split_documents(raw_documents, domain)
             self.documents = all_chunks
             
-            # Calculate adaptive quick chunk limit based on domain
+            # ENHANCED: Calculate adaptive quick chunk limit based on domain
+            # Use medium complexity (0.5) as default for initial processing
             default_query_analysis = {'is_longform': False, 'type': 'factual'}
             quick_chunk_limit = self.chunk_calculator.calculate_chunk_limit(
                 domain, 0.5, default_query_analysis
@@ -1213,7 +1292,7 @@ class FastRAGSystem:
             
             processing_time = time.time() - start_time
             
-            logger.info(f"⚡ Enhanced processing complete in {processing_time:.2f}s")
+            logger.info(f"âš¡ Enhanced processing complete in {processing_time:.2f}s")
             
             return {
                 'domain': domain,
@@ -1226,13 +1305,13 @@ class FastRAGSystem:
             }
         
         except Exception as e:
-            logger.error(f"❌ Enhanced document processing error: {e}")
+            logger.error(f"âŒ Enhanced document processing error: {e}")
             raise
 
     async def _setup_quick_retrievers(self):
         """Setup retrievers with minimal chunks for instant response"""
         try:
-            logger.info("🔧 Setting up optimized retrievers...")
+            logger.info("ðŸ”§ Setting up optimized retrievers...")
             
             if HAS_FAISS and self.quick_chunks:
                 try:
@@ -1247,9 +1326,10 @@ class FastRAGSystem:
                     # Use batch processing
                     await self.vector_store.add_documents_batch(self.quick_chunks, embeddings)
                     
-                    logger.info("✅ Optimized FAISS vector store setup complete")
+                    logger.info("âœ… Optimized FAISS vector store setup complete")
+                
                 except Exception as e:
-                    logger.warning(f"⚠️ FAISS setup failed: {e}")
+                    logger.warning(f"âš ï¸ FAISS setup failed: {e}")
                     self.vector_store = None
             
             # Setup BM25 with quick chunks
@@ -1259,12 +1339,100 @@ class FastRAGSystem:
                         BM25Retriever.from_documents, self.quick_chunks
                     )
                     self.bm25_retriever.k = min(5, len(self.quick_chunks))
-                    logger.info(f"✅ Optimized BM25 retriever setup complete (k={self.bm25_retriever.k})")
+                    logger.info(f"âœ… Optimized BM25 retriever setup complete (k={self.bm25_retriever.k})")
+            
             except Exception as e:
-                logger.warning(f"⚠️ BM25 retriever setup failed: {e}")
+                logger.warning(f"âš ï¸ BM25 retriever setup failed: {e}")
         
         except Exception as e:
-            logger.error(f"❌ Quick retriever setup error: {e}")
+            logger.error(f"âŒ Quick retriever setup error: {e}")
+
+    async def query_express_lane(self, query: str) -> Dict[str, Any]:
+        """Ultra-fast processing for simple queries"""
+        start_time = time.time()
+        
+        # Use only first 3-5 most relevant chunks
+        if self.vector_store and len(self.quick_chunks) > 0:
+            query_embedding = await get_query_embedding(query)
+            vector_results = await self.vector_store.similarity_search_with_score(
+                query_embedding, k=3
+            )
+            retrieved_docs = [doc for doc, score in vector_results]
+        else:
+            retrieved_docs = self.quick_chunks[:3]
+        
+        # Skip reranking for express lane
+        context = self._optimize_context_fast(retrieved_docs, query)
+        
+        # Generate response with reduced context
+        answer = await self._generate_response_fast(query, context, self.domain, 0.85)
+        
+        processing_time = time.time() - start_time
+        
+        logger.info(f"âš¡ Express lane complete in {processing_time:.2f}s")
+        
+        return {
+            "query": query,
+            "answer": answer,
+            "confidence": 0.85,
+            "domain": self.domain,
+            "processing_time": processing_time,
+            "express_lane": True
+        }
+
+    def _optimize_context_fast(self, documents: List[Document], query: str) -> str:
+        """Fast context optimization for simple queries"""
+        if not documents:
+            return ""
+        
+        context_parts = []
+        total_chars = 0
+        max_chars = 8000
+        
+        for doc in documents[:4]:
+            if total_chars + len(doc.page_content) <= max_chars:
+                context_parts.append(doc.page_content)
+                total_chars += len(doc.page_content)
+            else:
+                remaining = max_chars - total_chars
+                if remaining > 200:
+                    context_parts.append(doc.page_content[:remaining] + "...")
+                break
+        
+        return "\n\n".join(context_parts)
+
+    async def _generate_response_fast(self, query: str, context: str, domain: str, confidence: float) -> str:
+        """Faster response generation for simple queries with better prompting"""
+        try:
+            await ensure_gemini_ready()
+
+            # ðŸ”¹ IMPROVED: Better prompt for simple questions
+            system_prompt = f"""Expert {domain} analyst. Answer directly and concisely.
+
+Context: {context[:2000]}
+
+Question: {query}
+
+Provide a direct, accurate answer in 1-3 sentences maximum."""
+
+            response = await asyncio.wait_for(
+                gemini_client.chat.completions.create(
+                    messages=[{"role": "user", "content": system_prompt}],
+                    model="gemini-2.0-flash",
+                    temperature=0.1,
+                    max_tokens=200  # ðŸ”¹ REDUCED for conciseness
+                ),
+                timeout=6.0  # Slightly increased
+            )
+
+            return response.choices[0].message.content.strip()
+
+        except asyncio.TimeoutError:
+            logger.error("âš¡ Fast response timeout")
+            return "I can provide information on this topic, but need more processing time. Please try again."
+        except Exception as e:
+            logger.error(f"âŒ Fast response error: {e}")
+            return f"I found relevant information but encountered a processing error: {str(e)}"
 
     async def query(self, query: str) -> Dict[str, Any]:
         """Enhanced query processing with token-aware context and adaptive parameters"""
@@ -1275,7 +1443,7 @@ class FastRAGSystem:
             query_analysis = self.complexity_analyzer.analyze_query_complexity(query)
             complexity = query_analysis['complexity']
             
-            logger.info(f"🔍 Query analysis: type={query_analysis['type']}, "
+            logger.info(f"ðŸ” Query analysis: type={query_analysis['type']}, "
                        f"complexity={complexity:.2f}, tokens={query_analysis['token_count']}")
             
             # Check cache
@@ -1291,17 +1459,26 @@ class FastRAGSystem:
                     "cached": True
                 }
             
+            # Simple query routing (express lane)
+            if query_analysis['type'] == 'simple' and complexity < 0.3:
+                result = await self.query_express_lane(query)
+                QUERY_CACHE.cache_answer(query, doc_hash, result['answer'])
+                return result
+            
             # Enhanced retrieval with adaptive parameters
             retrieved_docs, similarity_scores = await self.retrieve_and_rerank_enhanced(
                 query, complexity, query_analysis
             )
             
             if not retrieved_docs:
-                logger.warning("⚠️ No documents retrieved, attempting enhanced fallback...")
+                # ðŸ”¹ ENHANCED FALLBACK: Try with different search strategies
+                logger.warning("âš ï¸ No documents retrieved, attempting enhanced fallback...")
+                
                 try:
+                    # Try with relaxed parameters and broader search
                     fallback_analysis = {
-                        'type': 'analytical',
-                        'is_longform': True,
+                        'type': 'analytical', 
+                        'is_longform': True, 
                         'complexity': 0.8
                     }
                     
@@ -1310,7 +1487,8 @@ class FastRAGSystem:
                         # Use text similarity as last resort
                         query_words = set(query.lower().split())
                         scored_docs = []
-                        for doc in self.documents[:50]:
+                        
+                        for doc in self.documents[:50]:  # Check more documents
                             content_words = set(doc.page_content.lower().split())
                             overlap = len(query_words.intersection(content_words))
                             if overlap > 0:
@@ -1321,9 +1499,10 @@ class FastRAGSystem:
                             scored_docs.sort(key=lambda x: x[1], reverse=True)
                             retrieved_docs = [doc for doc, _ in scored_docs[:8]]
                             similarity_scores = [score for _, score in scored_docs[:8]]
-                            logger.info(f"✅ Text similarity fallback retrieved {len(retrieved_docs)} documents")
+                            logger.info(f"âœ… Text similarity fallback retrieved {len(retrieved_docs)} documents")
                     
                     if not retrieved_docs:
+                        # Final fallback - provide helpful message
                         return {
                             "query": query,
                             "answer": "I couldn't find specific information about this question in the provided document. The document may not contain relevant details on this topic, or the question may need to be rephrased to better match the available content.",
@@ -1332,9 +1511,9 @@ class FastRAGSystem:
                             "processing_time": time.time() - start_time,
                             "fallback_used": "text_similarity_failed"
                         }
-                
+                        
                 except Exception as e:
-                    logger.error(f"❌ Enhanced fallback failed: {e}")
+                    logger.error(f"âŒ Enhanced fallback failed: {e}")
                     return {
                         "query": query,
                         "answer": "I apologize, but I couldn't find relevant information for this question in the provided document.",
@@ -1344,18 +1523,18 @@ class FastRAGSystem:
                         "fallback_error": str(e)
                     }
             
-            # Token-aware context selection
+            # ENHANCED: Token-aware context selection
             context = self.context_processor.select_context_with_budget(
                 retrieved_docs, query, complexity
             )
             
-            # Check context confidence
-            if len(context.strip()) < 200:
-                logger.warning("⚠️ Context too short, attempting fallback retrieval...")
+            # ðŸ”¹ OPTIMIZATION 5: CHECK CONTEXT CONFIDENCE
+            if len(context.strip()) < 200:  # Context too short
+                logger.warning("âš ï¸ Context too short, attempting fallback retrieval...")
                 try:
                     fallback_docs, _ = await self.retrieve_and_rerank_enhanced(
                         query,
-                        complexity=min(1.0, complexity + 0.3),
+                        complexity=min(1.0, complexity + 0.3),  # Increase complexity
                         query_analysis={'type': 'analytical', 'is_longform': True}
                     )
                     
@@ -1363,9 +1542,9 @@ class FastRAGSystem:
                         context = self.context_processor.select_context_with_budget(
                             fallback_docs, query, complexity + 0.3
                         )
-                        logger.info("✅ Fallback context selection successful")
+                        logger.info("âœ… Fallback context selection successful")
                 except Exception as e:
-                    logger.warning(f"⚠️ Fallback context selection failed: {e}")
+                    logger.warning(f"âš ï¸ Fallback context selection failed: {e}")
             
             answer = await self._generate_response_enhanced(query, context, self.domain, 0.8)
             
@@ -1388,7 +1567,7 @@ class FastRAGSystem:
             return sanitize_for_json(result)
         
         except Exception as e:
-            logger.error(f"❌ Enhanced query processing error: {e}")
+            logger.error(f"âŒ Enhanced query processing error: {e}")
             return {
                 "query": query,
                 "answer": f"An error occurred while processing your query: {sanitize_pii(str(e))}",
@@ -1398,19 +1577,20 @@ class FastRAGSystem:
             }
 
     async def retrieve_and_rerank_enhanced(self, query: str, complexity: float,
-                                           query_analysis: Dict[str, Any]) -> Tuple[List[Document], List[float]]:
+                                         query_analysis: Dict[str, Any]) -> Tuple[List[Document], List[float]]:
         """Enhanced retrieval with adaptive parameters and token awareness"""
         if not self.documents:
             return [], []
         
-        # Calculate adaptive parameters
+        # ENHANCED: Calculate adaptive parameters
         rerank_params = self.adaptive_reranker.calculate_rerank_params(complexity, query_analysis)
         rerank_top_k = rerank_params['rerank_top_k']
         context_docs = rerank_params['context_docs']
         
-        search_k = min(SEMANTIC_SEARCH_K, max(10, int(complexity * 20)))
+        # Adaptive search parameters based on OPTIMIZATION 1
+        search_k = min(SEMANTIC_SEARCH_K, max(10, int(complexity * 20)))  # Increased range
         
-        logger.info(f"🎯 Adaptive retrieval: search_k={search_k}, rerank_k={rerank_top_k}, "
+        logger.info(f"ðŸŽ¯ Adaptive retrieval: search_k={search_k}, rerank_k={rerank_top_k}, "
                    f"context_docs={context_docs}")
         
         query_embedding = await get_query_embedding(query)
@@ -1426,7 +1606,7 @@ class FastRAGSystem:
                 vector_results = [(doc, score) for doc, score in vector_search_results]
                 vector_docs = [doc for doc, score in vector_results]
             except Exception as e:
-                logger.warning(f"⚠️ Vector search failed: {e}")
+                logger.warning(f"âš ï¸ Vector search failed: {e}")
         
         # BM25 search
         bm25_docs = []
@@ -1434,59 +1614,92 @@ class FastRAGSystem:
         if self.bm25_retriever and len(vector_docs) < search_k:
             try:
                 bm25_search_results = await asyncio.to_thread(self.bm25_retriever.invoke, query) or []
-                bm25_limit = min(6, search_k - len(vector_docs))
+                bm25_limit = min(6, search_k - len(vector_docs))  # Increased limit
                 bm25_docs = bm25_search_results[:bm25_limit]
                 bm25_results = [(doc, 0.7) for doc in bm25_docs]
             except Exception as e:
-                logger.warning(f"⚠️ BM25 search failed: {e}")
+                logger.warning(f"âš ï¸ BM25 search failed: {e}")
         
         # Apply Reciprocal Rank Fusion if we have both result sets
         if vector_results and bm25_results:
-            logger.info("🔄 Applying Reciprocal Rank Fusion")
+            logger.info("ðŸ”„ Applying Reciprocal Rank Fusion")
             try:
                 fused_results = reciprocal_rank_fusion([vector_results, bm25_results])
                 unique_docs = [doc for doc, score in fused_results[:rerank_top_k]]
             except Exception as e:
-                logger.warning(f"⚠️ RRF failed, using simple combination: {e}")
-                all_docs = vector_docs[:6] + bm25_docs[:4]
+                logger.warning(f"âš ï¸ RRF failed, using simple combination: {e}")
+                all_docs = vector_docs[:6] + bm25_docs[:4]  # Increased limits
                 unique_docs = self._deduplicate_docs(all_docs)
         else:
-            all_docs = vector_docs[:6] + bm25_docs[:4]
+            all_docs = vector_docs[:6] + bm25_docs[:4]  # Increased limits
             unique_docs = self._deduplicate_docs(all_docs)
         
-        # Context-aware reranking with dynamic parameters
+        # ENHANCED: Context-aware reranking with dynamic parameters
         if reranker and len(unique_docs) > 3:
             try:
                 # Use longer context for complex queries
                 context_length = 500 if complexity > 0.7 else 300 if complexity > 0.5 else 200
-                
                 pairs = [[query, doc.page_content[:context_length]] for doc in unique_docs[:rerank_top_k]]
-                scores = reranker.predict(pairs)
                 
+                scores = reranker.predict(pairs)
                 scored_docs = list(zip(unique_docs[:len(scores)], scores))
                 scored_docs.sort(key=lambda x: x[1], reverse=True)
                 
                 final_docs = [doc for doc, _ in scored_docs[:context_docs]]
                 final_scores = [score for _, score in scored_docs[:context_docs]]
                 
-                logger.info(f"🎯 Enhanced reranking applied: {len(pairs)} candidates → {len(final_docs)} selected")
-                
+                logger.info(f"ðŸŽ¯ Enhanced reranking applied: {len(pairs)} candidates â†’ {len(final_docs)} selected")
                 return final_docs, final_scores
             
             except Exception as e:
-                logger.warning(f"⚠️ Enhanced reranking failed: {e}")
+                logger.warning(f"âš ï¸ Enhanced reranking failed: {e}")
         
         return unique_docs[:context_docs], [0.8] * min(len(unique_docs), context_docs)
+
+    def _calculate_confidence_enhanced(self, query: str, scores: List[float], docs: List[Document]) -> float:
+        """Enhanced confidence calculation"""
+        if not scores:
+            return 0.0
+        
+        try:
+            max_score = max(scores) if scores else 0.0
+            avg_score = sum(scores) / len(scores) if scores else 0.0
+            
+            # Enhanced query match checking
+            query_lower = query.lower()
+            query_words = set(query_lower.split())
+            
+            match_scores = []
+            for doc in docs[:3]:  # Check top 3 docs
+                doc_words = set(doc.page_content.lower().split())
+                overlap = len(query_words.intersection(doc_words))
+                match_score = overlap / len(query_words) if query_words else 0
+                match_scores.append(match_score)
+            
+            avg_match = sum(match_scores) / len(match_scores) if match_scores else 0
+            
+            # Weighted confidence calculation
+            confidence = (
+                0.4 * max_score +
+                0.3 * avg_score +
+                0.2 * avg_match +
+                0.1  # Base confidence
+            )
+            
+            return min(1.0, max(0.0, confidence))
+        
+        except Exception as e:
+            logger.warning(f"âš ï¸ Enhanced confidence calculation error: {e}")
+            return 0.3
 
     async def _generate_response_enhanced(self, query: str, context: str, domain: str, confidence: float) -> str:
         """Enhanced response generation with better prompting for concise, complete answers"""
         try:
             await ensure_gemini_ready()
-            
             if not gemini_client:
                 return "System is still initializing. Please wait a moment and try again."
-            
-            # Improved system prompt for concise but complete answers
+
+            # ðŸ”¹ OPTIMIZATION: Improved system prompt for concise but complete answers
             system_prompt = f"""You are an expert {domain} analyst. Provide COMPLETE but CONCISE answers.
 
 CRITICAL INSTRUCTIONS:
@@ -1498,54 +1711,55 @@ CRITICAL INSTRUCTIONS:
 6. For constitutional questions: cite specific articles/sections mentioned in context
 
 Context Quality: {confidence:.1%}"""
-            
-            # Better user message structure
+
+            # ðŸ”¹ OPTIMIZATION: Better user message structure
             user_message = f"""Context:
 {context}
 
 Question: {query}
 
 Provide a complete but concise answer. Focus on directly answering what is asked without unnecessary details."""
-            
+
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_message}
             ]
-            
+
             response = await asyncio.wait_for(
                 gemini_client.chat.completions.create(
                     messages=messages,
                     model="gemini-2.0-flash",
-                    temperature=0.05,
-                    max_tokens=600,
-                    top_p=0.9
+                    temperature=0.05,  # ðŸ”¹ REDUCED for more focused answers
+                    max_tokens=600,   # ðŸ”¹ REDUCED from 1000 for conciseness
+                    top_p=0.9        # ðŸ”¹ ADDED for better focus
                 ),
                 timeout=QUESTION_TIMEOUT
             )
-            
+
             return response.choices[0].message.content.strip()
-        
+
         except asyncio.TimeoutError:
-            logger.error(f"❌ Enhanced response generation timeout after {QUESTION_TIMEOUT}s")
+            logger.error(f"âŒ Enhanced response generation timeout after {QUESTION_TIMEOUT}s")
             return "I apologize, but the response generation took too long. Please try again with a simpler question."
-        
         except Exception as e:
-            logger.error(f"❌ Enhanced response generation error: {e}")
+            logger.error(f"âŒ Enhanced response generation error: {e}")
             return f"I apologize, but I encountered an error while processing your query: {str(e)}"
 
     def _deduplicate_docs(self, docs: List[Document]) -> List[Document]:
         """Quick deduplication of documents"""
         seen_content = set()
         unique_docs = []
+        
         for doc in docs:
             content_hash = hashlib.md5(doc.page_content.encode()).hexdigest()
             if content_hash not in seen_content:
                 seen_content.add(content_hash)
                 unique_docs.append(doc)
+        
         return unique_docs
 
 # ================================
-# GLOBAL INSTANCES
+# GLOBAL INSTANCES AND UTILITY FUNCTIONS
 # ================================
 
 # Initialize global instances
@@ -1553,14 +1767,16 @@ CACHE_MANAGER = SmartCacheManager()
 QUERY_CACHE = QueryResultCache()
 DOC_STATE_MANAGER = DocumentStateManager()
 MEMORY_MANAGER = MemoryManager()
+PERFORMANCE_MONITOR = PerformanceMonitor()
 DOMAIN_DETECTOR = DomainDetector()
+QUERY_ROUTER = QueryRouter()
 
 # ================================
-# UTILITY FUNCTIONS
+# ENHANCED UTILITY FUNCTIONS WITH RRF
 # ================================
 
 def reciprocal_rank_fusion(results_list: List[List[Tuple[Document, float]]], k_value: int = 60) -> List[Tuple[Document, float]]:
-    """Implement Reciprocal Rank Fusion for combining multiple result sets"""
+    """ENHANCED: Implement Reciprocal Rank Fusion for combining multiple result sets"""
     if not results_list:
         return []
     
@@ -1651,14 +1867,14 @@ async def get_query_embedding(query: str) -> np.ndarray:
                 query,
                 convert_to_numpy=True
             )
-            
             CACHE_MANAGER.set_embedding(query_hash, embedding)
             return embedding
         else:
-            logger.warning("⚠️ No embedding model available for query")
+            logger.warning("âš ï¸ No embedding model available for query")
             return np.zeros(384)
+    
     except Exception as e:
-        logger.error(f"❌ Query embedding error: {e}")
+        logger.error(f"âŒ Query embedding error: {e}")
         return np.zeros(384)
 
 async def ensure_gemini_ready():
@@ -1672,9 +1888,9 @@ async def ensure_gemini_ready():
                 timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
                 max_retries=3
             )
-            logger.info("✅ Gemini client initialized successfully")
+            logger.info("âœ… Gemini client initialized successfully")
         except Exception as e:
-            logger.error(f"❌ Failed to initialize Gemini client: {e}")
+            logger.error(f"âŒ Failed to initialize Gemini client: {e}")
             raise HTTPException(status_code=503, detail="Gemini client not available")
     elif gemini_client is None:
         raise HTTPException(status_code=503, detail="Gemini API key not configured")
@@ -1690,7 +1906,7 @@ async def ensure_models_ready():
         if _models_loaded and _startup_complete:
             return
         
-        logger.info("🔄 Loading pre-downloaded models...")
+        logger.info("ðŸ”„ Loading pre-downloaded models...")
         start_time = time.time()
         
         try:
@@ -1702,7 +1918,7 @@ async def ensure_models_ready():
                 )
                 base_sentence_model.eval()
                 _ = base_sentence_model.encode("warmup", show_progress_bar=False)
-                logger.info("✅ Sentence transformer loaded and warmed up")
+                logger.info("âœ… Sentence transformer loaded and warmed up")
             
             if reranker is None:
                 reranker = CrossEncoder(
@@ -1711,16 +1927,16 @@ async def ensure_models_ready():
                     device='cpu'
                 )
                 _ = reranker.predict([["warmup", "test"]])
-                logger.info("✅ Reranker loaded and warmed up")
+                logger.info("âœ… Reranker loaded and warmed up")
             
             _models_loaded = True
             _startup_complete = True
             
             load_time = time.time() - start_time
-            logger.info(f"✅ All models ready in {load_time:.2f}s")
+            logger.info(f"âœ… All models ready in {load_time:.2f}s")
         
         except Exception as e:
-            logger.error(f"❌ Failed to load models: {e}")
+            logger.error(f"âŒ Failed to load models: {e}")
             raise
 
 # ================================
@@ -1744,6 +1960,7 @@ def sanitize_pii(text: str) -> str:
     sanitized = text
     for pattern in patterns:
         sanitized = re.sub(pattern, '[REDACTED]', sanitized)
+    
     return sanitized
 
 def validate_url_scheme(url: str) -> bool:
@@ -1770,6 +1987,7 @@ def convert_numpy_types(obj):
 def sanitize_for_json(data):
     """Recursively sanitize data for JSON serialization"""
     import numpy as np
+    
     if isinstance(data, dict):
         return {k: sanitize_for_json(v) for k, v in data.items()}
     elif isinstance(data, list):
@@ -1789,7 +2007,7 @@ def sanitize_for_json(data):
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    logger.info("🚀 Starting Enhanced HackRx RAG System...")
+    logger.info("ðŸš€ Starting Enhanced HackRx RAG System...")
     start_time = time.time()
     
     try:
@@ -1798,15 +2016,15 @@ async def lifespan(app: FastAPI):
             await ensure_gemini_ready()
         
         startup_time = time.time() - start_time
-        logger.info(f"✅ Enhanced system fully initialized in {startup_time:.2f}s")
+        logger.info(f"âœ… Enhanced system fully initialized in {startup_time:.2f}s")
     
     except Exception as e:
-        logger.error(f"❌ Enhanced startup failed: {e}")
+        logger.error(f"âŒ Enhanced startup failed: {e}")
         raise
     
     yield
     
-    logger.info("🔄 Shutting down enhanced system...")
+    logger.info("ðŸ”„ Shutting down enhanced system...")
     _document_cache.clear()
     CACHE_MANAGER.clear_all_caches()
     
@@ -1816,7 +2034,7 @@ async def lifespan(app: FastAPI):
         except Exception:
             pass
     
-    logger.info("✅ Enhanced system shutdown complete")
+    logger.info("âœ… Enhanced system shutdown complete")
 
 app = FastAPI(
     title="Enhanced HackRx RAG System",
@@ -1832,21 +2050,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# ================================
-# REQUEST/RESPONSE MODELS
-# ================================
-
-class HackRxRunRequest(BaseModel):
-    documents: str  # Single document URL as string
-    questions: List[str]  # List of questions
-
-class HackRxAnswer(BaseModel):
-    question: str
-    answer: str
-
-class HackRxRunResponse(BaseModel):
-    answers: List[HackRxAnswer]
 
 # ================================
 # API ENDPOINTS
@@ -1889,7 +2092,6 @@ async def health_check():
             "memory_info": memory_info,
             "timestamp": datetime.now().isoformat()
         }
-    
     except Exception as e:
         return {
             "status": "error",
@@ -1897,87 +2099,321 @@ async def health_check():
             "timestamp": datetime.now().isoformat()
         }
 
-@app.post("/hackrx/run", response_model=HackRxRunResponse)
-async def hackrx_run_endpoint(request: HackRxRunRequest, http_request: Request):
-    """Main HackRx endpoint that processes document and answers all questions"""
+@app.get("/status")
+async def detailed_status():
+    """Enhanced status endpoint with performance metrics"""
+    try:
+        cache_stats = CACHE_MANAGER.get_cache_stats()
+        
+        performance_stats = {}
+        for operation in ['embedding', 'retrieval', 'reranking', 'generation']:
+            avg_time = PERFORMANCE_MONITOR.get_average_timing(operation)
+            performance_stats[f"{operation}_avg_ms"] = round(avg_time * 1000, 2)
+        
+        memory_info = {}
+        if HAS_PSUTIL:
+            memory = psutil.virtual_memory()
+            memory_info = {
+                "memory_percent": memory.percent,
+                "memory_available_gb": round(memory.available / (1024**3), 2),
+                "memory_used_gb": round(memory.used / (1024**3), 2)
+            }
+        
+        return {
+            "system_status": "operational",
+            "version": "2.1.0",
+            "models_loaded": _models_loaded,
+            "startup_complete": _startup_complete,
+            "features": {
+                "faiss_available": HAS_FAISS,
+                "psutil_available": HAS_PSUTIL,
+                "cachetools_available": HAS_CACHETOOLS,
+                "magic_available": HAS_MAGIC
+            },
+            "cache_stats": cache_stats,
+            "performance_stats": performance_stats,
+            "memory_info": memory_info,
+            "configuration": {
+                "chunk_size": CHUNK_SIZE,
+                "chunk_overlap": CHUNK_OVERLAP,
+                "max_context_tokens": MAX_CONTEXT_TOKENS,
+                "semantic_search_k": SEMANTIC_SEARCH_K,
+                "context_docs": CONTEXT_DOCS,
+                "confidence_threshold": CONFIDENCE_THRESHOLD
+            },
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"âŒ Status endpoint error: {e}")
+        return {
+            "system_status": "error",
+            "error": sanitize_pii(str(e)),
+            "timestamp": datetime.now().isoformat()
+        }
+
+# ================================
+# REQUEST/RESPONSE MODELS
+# ================================
+
+class DocumentProcessRequest(BaseModel):
+    sources: List[str]
+
+class QueryRequest(BaseModel):
+    query: str
+
+class DocumentProcessResponse(BaseModel):
+    status: str
+    domain: str
+    domain_confidence: float
+    total_chunks: int
+    quick_chunks: int
+    processing_time: float
+    message: str = ""
+    error: str = ""
+
+class QueryResponse(BaseModel):
+    query: str
+    answer: str
+    confidence: float
+    domain: str
+    processing_time: float
+    retrieved_chunks: int = 0
+    query_type: str = ""
+    complexity: float = 0.0
+    cached: bool = False
+    express_lane: bool = False
+    enhanced_accuracy: bool = False
+
+# ================================
+# MAIN API ENDPOINTS
+# ================================
+
+@app.post("/process-documents", response_model=DocumentProcessResponse)
+async def process_documents_endpoint(request: DocumentProcessRequest, http_request: Request):
+    """Enhanced document processing endpoint"""
     if not simple_auth_check(http_request):
         raise HTTPException(status_code=401, detail="Unauthorized")
     
-    if not request.questions:
-        raise HTTPException(status_code=400, detail="No questions provided")
-    
-    if len(request.questions) > 20:  # Reasonable limit
-        raise HTTPException(status_code=400, detail="Maximum 20 questions allowed per request")
-    
-    start_time = time.time()
-    
     try:
-        logger.info(f"📤 Processing HackRx request with {len(request.questions)} questions")
-        logger.info(f"📄 Document URL: {sanitize_pii(request.documents)}")
+        logger.info(f"ðŸ“¤ Processing {len(request.sources)} documents")
         
-        # Process the document
-        result = await rag_system.process_documents_fast([request.documents])
+        # Validate sources
+        for source in request.sources:
+            if source.startswith(('http://', 'https://')):
+                if not validate_url_scheme(source):
+                    raise HTTPException(status_code=400, detail=f"Unsupported URL scheme: {source}")
+            else:
+                if not validate_file_extension(source):
+                    raise HTTPException(status_code=400, detail=f"Unsupported file type: {source}")
         
-        if 'error' in result:
-            raise HTTPException(status_code=500, detail=f"Document processing failed: {result['error']}")
-        
-        logger.info(f"📄 Document processed successfully: domain={result.get('domain', 'unknown')}")
-        
-        # Process all questions
-        answers = []
-        
-        for i, question in enumerate(request.questions):
-            try:
-                logger.info(f"🔍 Processing question {i+1}/{len(request.questions)}: {sanitize_pii(question[:100])}")
-                
-                # Process the query
-                query_result = await rag_system.query(question)
-                
-                answer = HackRxAnswer(
-                    question=question,
-                    answer=query_result.get('answer', 'Unable to process this question.')
-                )
-                
-                answers.append(answer)
-                
-                logger.info(f"✅ Question {i+1} processed successfully")
-            
-            except Exception as e:
-                logger.error(f"❌ Error processing question {i+1}: {e}")
-                
-                # Add error answer
-                error_answer = HackRxAnswer(
-                    question=question,
-                    answer=f"I apologize, but I encountered an error while processing this question: {sanitize_pii(str(e))}"
-                )
-                
-                answers.append(error_answer)
+        # Process documents
+        result = await rag_system.process_documents_fast(request.sources)
         
         # Memory cleanup
         MEMORY_MANAGER.cleanup_if_needed()
         
-        processing_time = time.time() - start_time
-        logger.info(f"🎯 HackRx request completed in {processing_time:.2f}s with {len(answers)} answers")
-        
-        return HackRxRunResponse(answers=answers)
+        return DocumentProcessResponse(
+            status="success",
+            domain=result.get('domain', 'general'),
+            domain_confidence=result.get('domain_confidence', 0.5),
+            total_chunks=result.get('total_chunks', 0),
+            quick_chunks=result.get('quick_chunks', 0),
+            processing_time=result.get('processing_time', 0.0),
+            message=f"Successfully processed {len(request.sources)} documents"
+        )
     
     except HTTPException:
         raise
+    except Exception as e:
+        logger.error(f"âŒ Document processing error: {e}")
+        return DocumentProcessResponse(
+            status="error",
+            domain="unknown",
+            domain_confidence=0.0,
+            total_chunks=0,
+            quick_chunks=0,
+            processing_time=0.0,
+            error=sanitize_pii(str(e))
+        )
+
+@app.post("/hackrx/run")
+async def hackrx_run_endpoint(request: HackRxRunRequest, http_request: Request):
+    """HackRx competition endpoint - processes document and answers multiple questions"""
+    if not simple_auth_check(http_request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
     
+    # Validate input
+    if not request.documents.strip():
+        raise HTTPException(status_code=400, detail="Document URL cannot be empty")
+    
+    if not request.questions or len(request.questions) == 0:
+        raise HTTPException(status_code=400, detail="Questions list cannot be empty")
+    
+    # Increase limit from 20 to 50
+    if len(request.questions) > 50:
+        raise HTTPException(status_code=400, detail="Maximum 50 questions allowed per request")
+    
+    start_time = time.time()
+    
+    try:
+        logger.info(f"🏆 HackRx processing: 1 document, {len(request.questions)} questions")
+        
+        # Step 1: Process the document
+        try:
+            # Convert single document string to list format expected by process_documents_fast
+            sources = [request.documents]
+            
+            # Validate the document URL
+            if not validate_url_scheme(request.documents):
+                raise HTTPException(status_code=400, detail=f"Unsupported URL scheme: {request.documents}")
+            
+            # Process the document
+            doc_result = await rag_system.process_documents_fast(sources)
+            
+            if doc_result.get('status') == 'error':
+                raise HTTPException(status_code=400, detail=f"Document processing failed: {doc_result.get('error', 'Unknown error')}")
+            
+            logger.info(f"✅ Document processed: {doc_result.get('domain', 'general')} domain, {doc_result.get('total_chunks', 0)} chunks")
+            
+        except HTTPException:
+            raise
+        except Exception as e:
+            logger.error(f"❌ Document processing error: {e}")
+            raise HTTPException(status_code=500, detail=f"Document processing failed: {sanitize_pii(str(e))}")
+        
+        # Step 2: Process all questions
+        results = []
+        for i, question in enumerate(request.questions):
+            if not question.strip():
+                logger.warning(f"⚠️ Skipping empty question at index {i}")
+                results.append({
+                    "question": question,
+                    "answer": "Question is empty",
+                    "confidence": 0.0,
+                    "processing_time": 0.0,
+                    "error": "Empty question"
+                })
+                continue
+            
+            try:
+                logger.info(f"📝 Processing question {i+1}/{len(request.questions)}: {sanitize_pii(question[:50])}...")
+                
+                # Process the question
+                query_result = await rag_system.query(question)
+                
+                # Format result for HackRx response
+                formatted_result = {
+                    "question": question,
+                    "answer": query_result.get('answer', ''),
+                    "confidence": query_result.get('confidence', 0.0),
+                    "domain": query_result.get('domain', 'unknown'),
+                    "processing_time": query_result.get('processing_time', 0.0),
+                    "retrieved_chunks": query_result.get('retrieved_chunks', 0),
+                    "query_type": query_result.get('query_type', ''),
+                    "complexity": query_result.get('complexity', 0.0),
+                    "cached": query_result.get('cached', False),
+                    "express_lane": query_result.get('express_lane', False)
+                }
+                
+                results.append(formatted_result)
+                
+            except Exception as e:
+                logger.error(f"❌ Question processing error for question {i+1}: {e}")
+                results.append({
+                    "question": question,
+                    "answer": f"Error processing question: {sanitize_pii(str(e))}",
+                    "confidence": 0.0,
+                    "processing_time": 0.0,
+                    "error": sanitize_pii(str(e))
+                })
+        
+        total_processing_time = time.time() - start_time
+        
+        # Memory cleanup
+        MEMORY_MANAGER.cleanup_if_needed()
+        
+        logger.info(f"🏆 HackRx batch completed: {len(results)} questions processed in {total_processing_time:.2f}s")
+        
+        # Return results in the expected format
+        response_data = {
+            "results": sanitize_for_json(results),
+            "summary": {
+                "total_questions": len(request.questions),
+                "successful_answers": len([r for r in results if not r.get('error')]),
+                "document_domain": doc_result.get('domain', 'general'),
+                "total_processing_time": total_processing_time,
+                "average_time_per_question": total_processing_time / max(1, len(request.questions))
+            }
+        }
+        
+        return sanitize_for_json(response_data)
+        
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"❌ HackRx endpoint error: {e}")
-        processing_time = time.time() - start_time
+        total_time = time.time() - start_time
         
-        # Return error answers for all questions
-        error_answers = [
-            HackRxAnswer(
-                question=question,
-                answer=f"System error occurred while processing your question: {sanitize_pii(str(e))}"
-            )
-            for question in request.questions
-        ]
-        
-        return HackRxRunResponse(answers=error_answers)
+        return {
+            "results": [],
+            "error": sanitize_pii(str(e)),
+            "processing_time": total_time,
+            "status": "error"
+        }
+
+@app.post("/batch-query")
+async def batch_query_endpoint(queries: List[str], http_request: Request):
+    """Process multiple queries in batch"""
+    if not simple_auth_check(http_request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    if len(queries) > 50:
+        raise HTTPException(status_code=400, detail="Maximum  50 qeries per batch")
+    
+    results = []
+    for query in queries:
+        if query.strip():
+            try:
+                result = await rag_system.query(query)
+                results.append(result)
+            except Exception as e:
+                logger.error(f"âŒ Batch query error for '{sanitize_pii(query)}': {e}")
+                results.append({
+                    "query": query,
+                    "answer": f"Error processing query: {sanitize_pii(str(e))}",
+                    "confidence": 0.0,
+                    "domain": "unknown",
+                    "processing_time": 0.0
+                })
+    
+    return {"results": sanitize_for_json(results)}
+
+@app.get("/cache/stats")
+async def cache_stats_endpoint(http_request: Request):
+    """Get cache statistics"""
+    if not simple_auth_check(http_request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    return CACHE_MANAGER.get_cache_stats()
+
+@app.post("/cache/clear")
+async def clear_cache_endpoint(http_request: Request):
+    """Clear all caches"""
+    if not simple_auth_check(http_request):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    
+    try:
+        CACHE_MANAGER.clear_all_caches()
+        QUERY_CACHE.cache.clear()
+        logger.info("ðŸ§¹ All caches cleared via API")
+        return {"status": "success", "message": "All caches cleared"}
+    except Exception as e:
+        logger.error(f"âŒ Cache clear error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+    
+    return stats
 
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request: Request, exc: HTTPException):
@@ -1994,7 +2430,7 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(Exception)
 async def general_exception_handler(request: Request, exc: Exception):
     """Handle general exceptions"""
-    logger.error(f"❌ Unhandled exception: {exc}")
+    logger.error(f"âŒ Unhandled exception: {exc}")
     return JSONResponse(
         status_code=500,
         content={
@@ -2021,7 +2457,7 @@ if __name__ == "__main__":
     config = {
         "host": "0.0.0.0",
         "port": int(os.getenv("PORT", 8000)),
-        "workers": 1,
+        "workers": 1,  # Single worker for model sharing
         "loop": "uvloop" if sys.platform != "win32" else "asyncio",
         "http": "httptools" if sys.platform != "win32" else "h11",
         "access_log": False,
@@ -2030,12 +2466,12 @@ if __name__ == "__main__":
         "timeout_graceful_shutdown": 30
     }
     
-    logger.info(f"🚀 Starting Enhanced HackRx RAG System on {config['host']}:{config['port']}")
+    logger.info(f"ðŸš€ Starting Enhanced HackRx RAG System on {config['host']}:{config['port']}")
     
     try:
         uvicorn.run("main:app", **config)
     except KeyboardInterrupt:
-        logger.info("👋 Graceful shutdown initiated")
+        logger.info("ðŸ‘‹ Graceful shutdown initiated")
     except Exception as e:
-        logger.error(f"❌ Server startup error: {e}")
+        logger.error(f"âŒ Server startup error: {e}")
         sys.exit(1)
