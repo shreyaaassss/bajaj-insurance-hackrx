@@ -86,12 +86,64 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ================================
-# ENHANCED CONFIGURATION WITH ACCURACY IMPROVEMENTS
+# SMART API KEY MANAGEMENT
 # ================================
 
-# Fixed optimal configuration
 HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
-GEMINI_API_KEY = 'AIzaSyAv1KkRE-xS_HXylwhRAqz8ky1zRGsc3Jg'
+
+# Smart Gemini API Key Management 
+GEMINI_API_KEYS = {
+    "document_processing": os.getenv("GEMINI_API_KEY_DOC", 'AIzaSyAv1KkRE-xS_HXylwhRAqz8ky1zRGsc3Jg'),
+    "query_response": os.getenv("GEMINI_API_KEY_QUERY", 'AIzaSyDXNgHVcZuCJrs-qzucydlTdO7hX-BgV8Y'),
+    "fallback": os.getenv("GEMINI_API_KEY_FALLBACK", 'AIzaSyDWFKzuKaGmKqSYlqjQTbEtrnGsx4SJ9lo'),
+}
+
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+
+# Dynamic Gemini Model Selection
+GEMINI_MODELS = {
+    "simple": "gemini-2.0-flash-exp",  # Fast, cost-effective
+    "complex": "gemini-2.0-flash",     # High accuracy
+}
+
+def get_gemini_client(api_key_name: str, fallback_ok=True):
+    """Get Gemini client with smart key selection and fallback"""
+    api_key = GEMINI_API_KEYS.get(api_key_name)
+    
+    try:
+        if api_key:
+            return AsyncOpenAI(
+                api_key=api_key,
+                base_url=GEMINI_BASE_URL,
+                timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
+                max_retries=3
+            )
+        elif fallback_ok and GEMINI_API_KEYS.get("fallback"):
+            return AsyncOpenAI(
+                api_key=GEMINI_API_KEYS["fallback"],
+                base_url=GEMINI_BASE_URL,
+                timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
+                max_retries=3
+            )
+        else:
+            raise RuntimeError("No API key available for Gemini")
+    except Exception as e:
+        if fallback_ok and GEMINI_API_KEYS.get("fallback"):
+            return AsyncOpenAI(
+                api_key=GEMINI_API_KEYS["fallback"],
+                base_url=GEMINI_BASE_URL,
+                timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
+                max_retries=3
+            )
+        raise
+
+def select_gemini_model(complexity: float) -> str:
+    """Select appropriate Gemini model based on query complexity"""
+    return GEMINI_MODELS["simple"] if complexity < 0.3 else GEMINI_MODELS["complex"]
+
+# ================================
+# ENHANCED CONFIGURATION WITH ACCURACY IMPROVEMENTS
+# ================================
 
 # ENHANCED CONFIGURATION WITH ACCURACY IMPROVEMENTS
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
@@ -111,7 +163,6 @@ MAX_RERANK_TOP_K = 16 # Maximum for complex queries
 # ENHANCED: Token budget management
 MAX_CONTEXT_TOKENS = 8000 # Increased from 4500
 TOKEN_SAFETY_MARGIN = 300 # Slightly increased
-
 MAX_FILE_SIZE_MB = 50
 QUESTION_TIMEOUT = 5.0
 
@@ -119,8 +170,6 @@ QUESTION_TIMEOUT = 5.0
 OPTIMAL_BATCH_SIZE = 32
 MAX_PARALLEL_BATCHES = 4
 EMBEDDING_TIMEOUT = 60.0
-
-# NOTE: QUICK_CHUNK_LIMIT removed - now dynamic based on query complexity
 
 # Supported file types
 SUPPORTED_EXTENSIONS = ['.pdf', '.docx', '.doc', '.txt', '.md', '.csv']
@@ -170,7 +219,6 @@ _cache_ttl = 1800 # 30 minutes
 # Global models
 base_sentence_model = None
 reranker = None
-gemini_client = None
 
 # ================================
 # ENHANCED QUERY ANALYSIS WITH COMPLEXITY SCORING
@@ -199,7 +247,7 @@ class QueryComplexityAnalyzer:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
         except Exception:
             self.tokenizer = None
-    
+
     def analyze_query_complexity(self, query: str) -> Dict[str, Any]:
         """Enhanced query complexity analysis with token awareness"""
         query_lower = query.lower().strip()
@@ -305,9 +353,9 @@ class TokenAwareContextProcessor:
     """Token-aware context processor with budget management"""
     
     def __init__(self):
-        self.max_context_tokens = MAX_CONTEXT_TOKENS  # Now 8000
-        self.safety_margin = TOKEN_SAFETY_MARGIN      # Now 300
-        self.available_tokens = self.max_context_tokens - self.safety_margin  # 7700 tokens
+        self.max_context_tokens = MAX_CONTEXT_TOKENS # Now 8000
+        self.safety_margin = TOKEN_SAFETY_MARGIN # Now 300
+        self.available_tokens = self.max_context_tokens - self.safety_margin # 7700 tokens
         
         try:
             self.tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -344,7 +392,7 @@ class TokenAwareContextProcessor:
             
             # Boost for query term matches
             query_matches = sum(1 for word in query.split()
-                              if word.lower() in content.lower())
+                               if word.lower() in content.lower())
             match_score = min(0.5, query_matches * 0.1)
             
             # Boost for content quality (longer chunks often have better context)
@@ -427,7 +475,6 @@ class AdaptiveReranker:
     @staticmethod
     def calculate_rerank_params(complexity: float, query_analysis: Dict[str, Any]) -> Dict[str, int]:
         """Calculate adaptive reranking parameters"""
-        
         # Base reranking parameters
         if complexity > 0.7 or query_analysis.get('is_longform', False):
             # High complexity or longform queries need extensive reranking
@@ -483,7 +530,7 @@ class SmartCacheManager:
             self.embedding_cache.clear()
             self.document_chunk_cache.clear()
             self.domain_cache.clear()
-        logger.info("🧹 All caches cleared for new document upload")
+            logger.info("🧹 All caches cleared for new document upload")
     
     def get_embedding(self, text_hash: str) -> Optional[Any]:
         """Thread-safe embedding cache get"""
@@ -772,6 +819,7 @@ class UnifiedLoader:
             r'docs\.google\.com/document/d/([a-zA-Z0-9-_]+)',
             r'docs\.google\.com/spreadsheets/d/([a-zA-Z0-9-_]+)',
         ]
+        
         self.dropbox_patterns = [
             r'dropbox\.com/s/([a-zA-Z0-9]+)',
             r'dropbox\.com/sh/([a-zA-Z0-9]+)',
@@ -795,7 +843,6 @@ class UnifiedLoader:
             
             logger.info(f"✅ Loaded {len(docs)} documents from {sanitize_pii(source)}")
             return docs
-        
         except Exception as e:
             logger.error(f"❌ Failed to load {sanitize_pii(source)}: {e}")
             raise
@@ -917,7 +964,6 @@ class UnifiedLoader:
             return '.pdf'
         elif b'PK' in content[:10]:
             return '.docx'
-        
         return '.txt'
     
     async def _load_from_file(self, file_path: str) -> List[Document]:
@@ -1041,7 +1087,6 @@ class OptimizedFAISSVectorStore:
             self.documents.extend(documents)
             
             logger.info(f"⚡ Added {len(documents)} documents in single batch")
-            
         except Exception as e:
             logger.error(f"❌ Batch FAISS add error: {e}")
             raise
@@ -1070,7 +1115,6 @@ class OptimizedFAISSVectorStore:
                     results.append((doc, normalized_score))
             
             return results
-            
         except Exception as e:
             logger.error(f"❌ Error in FAISS similarity search: {e}")
             return []
@@ -1228,7 +1272,7 @@ class FastRAGSystem:
                 'processing_time': processing_time,
                 'enhanced': True
             }
-            
+        
         except Exception as e:
             logger.error(f"❌ Enhanced document processing error: {e}")
             raise
@@ -1287,8 +1331,9 @@ class FastRAGSystem:
         # Skip reranking for express lane
         context = self._optimize_context_fast(retrieved_docs, query)
         
-        # Generate response with reduced context
-        answer = await self._generate_response_fast(query, context, self.domain, 0.85)
+        # Generate response with reduced context and appropriate model
+        query_analysis = self.complexity_analyzer.analyze_query_complexity(query)
+        answer = await self._generate_response_fast(query, context, self.domain, 0.85, query_analysis)
         
         processing_time = time.time() - start_time
         logger.info(f"⚡ Express lane complete in {processing_time:.2f}s")
@@ -1323,10 +1368,13 @@ class FastRAGSystem:
         
         return "\n\n".join(context_parts)
     
-    async def _generate_response_fast(self, query: str, context: str, domain: str, confidence: float) -> str:
-        """Faster response generation with reduced token limits"""
+    async def _generate_response_fast(self, query: str, context: str, domain: str, 
+                                      confidence: float, query_analysis: Dict[str, Any]) -> str:
+        """Faster response generation with dynamic model selection"""
         try:
-            await ensure_gemini_ready()
+            complexity = query_analysis['complexity']
+            model_name = select_gemini_model(complexity)
+            client = get_gemini_client("query_response")
             
             # Shorter, more direct prompt
             system_prompt = f"""Expert {domain} analyst. Answer concisely based on context provided.
@@ -1338,9 +1386,9 @@ Question: {query}
 Provide a direct, accurate answer."""
             
             response = await asyncio.wait_for(
-                gemini_client.chat.completions.create(
+                client.chat.completions.create(
                     messages=[{"role": "user", "content": system_prompt}],
-                    model="gemini-2.0-flash",
+                    model=model_name,
                     temperature=0.1,
                     max_tokens=250
                 ),
@@ -1348,10 +1396,11 @@ Provide a direct, accurate answer."""
             )
             
             return response.choices[0].message.content.strip()
-            
+        
         except asyncio.TimeoutError:
             logger.error("⚡ Fast response timeout")
             return "Based on the available information, I can provide a quick response, but please try again for a more detailed answer."
+        
         except Exception as e:
             logger.error(f"❌ Fast response error: {e}")
             return f"I found relevant information but encountered a processing error: {str(e)}"
@@ -1406,14 +1455,14 @@ Provide a direct, accurate answer."""
                 retrieved_docs, query, complexity
             )
             
-            answer = await self._generate_response_enhanced(query, context, self.domain, 0.8)  # Fixed high confidence
+            answer = await self._generate_response_enhanced(query, context, self.domain, 0.8, query_analysis)
             
             processing_time = time.time() - start_time
             
             result = {
                 "query": query,
                 "answer": answer,
-                "confidence": 0.8,  # Fixed value or remove entirely
+                "confidence": 0.8,
                 "domain": self.domain,
                 "retrieved_chunks": len(retrieved_docs),
                 "processing_time": processing_time,
@@ -1423,9 +1472,8 @@ Provide a direct, accurate answer."""
             }
             
             QUERY_CACHE.cache_answer(query, doc_hash, answer)
-            
             return sanitize_for_json(result)
-            
+        
         except Exception as e:
             logger.error(f"❌ Enhanced query processing error: {e}")
             return {
@@ -1437,7 +1485,7 @@ Provide a direct, accurate answer."""
             }
     
     async def retrieve_and_rerank_enhanced(self, query: str, complexity: float,
-                                         query_analysis: Dict[str, Any]) -> Tuple[List[Document], List[float]]:
+                                          query_analysis: Dict[str, Any]) -> Tuple[List[Document], List[float]]:
         """Enhanced retrieval with adaptive parameters and token awareness"""
         if not self.documents:
             return [], []
@@ -1458,7 +1506,6 @@ Provide a direct, accurate answer."""
         # Vector search
         vector_docs = []
         vector_results = []
-        
         if self.vector_store:
             try:
                 vector_search_results = await self.vector_store.similarity_search_with_score(
@@ -1472,7 +1519,6 @@ Provide a direct, accurate answer."""
         # BM25 search
         bm25_docs = []
         bm25_results = []
-        
         if self.bm25_retriever and len(vector_docs) < search_k:
             try:
                 bm25_search_results = await asyncio.to_thread(self.bm25_retriever.invoke, query) or []
@@ -1501,6 +1547,7 @@ Provide a direct, accurate answer."""
             try:
                 # Use longer context for complex queries
                 context_length = 500 if complexity > 0.7 else 300 if complexity > 0.5 else 200
+                
                 pairs = [[query, doc.page_content[:context_length]] for doc in unique_docs[:rerank_top_k]]
                 scores = reranker.predict(pairs)
                 
@@ -1512,7 +1559,7 @@ Provide a direct, accurate answer."""
                 
                 logger.info(f"🎯 Enhanced reranking applied: {len(pairs)} candidates → {len(final_docs)} selected")
                 return final_docs, final_scores
-                
+            
             except Exception as e:
                 logger.warning(f"⚠️ Enhanced reranking failed: {e}")
         
@@ -1549,18 +1596,18 @@ Provide a direct, accurate answer."""
             )
             
             return min(1.0, max(0.0, confidence))
-            
+        
         except Exception as e:
             logger.warning(f"⚠️ Enhanced confidence calculation error: {e}")
             return 0.3
     
-    async def _generate_response_enhanced(self, query: str, context: str, domain: str, confidence: float) -> str:
-        """Enhanced response generation with better prompting"""
+    async def _generate_response_enhanced(self, query: str, context: str, domain: str, 
+                                         confidence: float, query_analysis: Dict[str, Any]) -> str:
+        """Enhanced response generation with dynamic model selection"""
         try:
-            await ensure_gemini_ready()
-            
-            if not gemini_client:
-                return "System is still initializing. Please wait a moment and try again."
+            complexity = query_analysis['complexity']
+            model_name = select_gemini_model(complexity)
+            client = get_gemini_client("query_response")
             
             # Enhanced system prompt based on domain and confidence
             system_prompt = f"""You are an expert document analyst specializing in {domain} content.
@@ -1575,6 +1622,7 @@ INSTRUCTIONS:
 Context Quality: {confidence:.1%}"""
             
             user_message = f"""Context Information:
+
 {context}
 
 Question: {query}
@@ -1587,20 +1635,21 @@ Please provide a detailed, accurate answer based on the context above. Focus on 
             ]
             
             response = await asyncio.wait_for(
-                gemini_client.chat.completions.create(
+                client.chat.completions.create(
                     messages=messages,
-                    model="gemini-2.0-flash",
+                    model=model_name,
                     temperature=0.1,
-                    max_tokens=1000 # Slightly increased for better responses
+                    max_tokens=1000
                 ),
                 timeout=QUESTION_TIMEOUT
             )
             
             return response.choices[0].message.content.strip()
-            
+        
         except asyncio.TimeoutError:
             logger.error(f"❌ Enhanced response generation timeout after {QUESTION_TIMEOUT}s")
             return "I apologize, but the response generation took too long. Please try again with a simpler question."
+        
         except Exception as e:
             logger.error(f"❌ Enhanced response generation error: {e}")
             return f"I apologize, but I encountered an error while processing your query: {str(e)}"
@@ -1733,28 +1782,10 @@ async def get_query_embedding(query: str) -> np.ndarray:
         else:
             logger.warning("⚠️ No embedding model available for query")
             return np.zeros(384)
+    
     except Exception as e:
         logger.error(f"❌ Query embedding error: {e}")
         return np.zeros(384)
-
-async def ensure_gemini_ready():
-    """Ensure Gemini client is ready"""
-    global gemini_client
-    
-    if gemini_client is None and GEMINI_API_KEY:
-        try:
-            gemini_client = AsyncOpenAI(
-                api_key=GEMINI_API_KEY,
-                base_url="https://generativelanguage.googleapis.com/v1beta/openai/",
-                timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=5.0),
-                max_retries=3
-            )
-            logger.info("✅ Gemini client initialized successfully")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize Gemini client: {e}")
-            raise HTTPException(status_code=503, detail="Gemini client not available")
-    elif gemini_client is None:
-        raise HTTPException(status_code=503, detail="Gemini API key not configured")
 
 async def ensure_models_ready():
     """Load models only once per container lifecycle"""
@@ -1792,9 +1823,10 @@ async def ensure_models_ready():
             
             _models_loaded = True
             _startup_complete = True
+            
             load_time = time.time() - start_time
             logger.info(f"✅ All models ready in {load_time:.2f}s")
-            
+        
         except Exception as e:
             logger.error(f"❌ Failed to load models: {e}")
             raise
@@ -1820,6 +1852,7 @@ def sanitize_pii(text: str) -> str:
     sanitized = text
     for pattern in patterns:
         sanitized = re.sub(pattern, '[REDACTED]', sanitized)
+    
     return sanitized
 
 def validate_url_scheme(url: str) -> bool:
@@ -1867,40 +1900,26 @@ def sanitize_for_json(data):
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     logger.info("🚀 Starting Enhanced HackRx RAG System...")
-    start_time = time.time()
     
     try:
         await ensure_models_ready()
-        if GEMINI_API_KEY:
-            await ensure_gemini_ready()
-        
-        startup_time = time.time() - start_time
-        logger.info(f"✅ Enhanced system fully initialized in {startup_time:.2f}s")
+        logger.info("✅ Application startup complete")
+        yield
     except Exception as e:
-        logger.error(f"❌ Enhanced startup failed: {e}")
+        logger.error(f"❌ Startup failed: {e}")
         raise
-    
-    yield
-    
-    logger.info("🔄 Shutting down enhanced system...")
-    _document_cache.clear()
-    CACHE_MANAGER.clear_all_caches()
-    
-    if gemini_client and hasattr(gemini_client, 'close'):
-        try:
-            await gemini_client.close()
-        except Exception:
-            pass
-    
-    logger.info("✅ Enhanced system shutdown complete")
+    finally:
+        logger.info("🛑 Application shutdown")
 
+# Initialize FastAPI with lifespan
 app = FastAPI(
     title="Enhanced HackRx RAG System",
-    description="Enhanced RAG System with Accuracy Improvements and Google Gemini",
-    version="2.1.0",
+    description="High-performance document Q&A with smart API key management and dynamic model selection",
+    version="2.0.0",
     lifespan=lifespan
 )
 
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -1909,162 +1928,216 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Global RAG system instance
+rag_system = FastRAGSystem()
+
+# ================================
+# REQUEST/RESPONSE MODELS
+# ================================
+
+class DocumentRequest(BaseModel):
+    sources: List[str]
+
+class DocumentResponse(BaseModel):
+    domain: str
+    domain_confidence: float
+    total_chunks: int
+    quick_chunks: int
+    processing_time: float
+    enhanced: bool = True
+
+class QueryRequest(BaseModel):
+    question: str
+
+class QueryResponse(BaseModel):
+    query: str
+    answer: str
+    confidence: float
+    domain: str
+    processing_time: float
+    cached: bool = False
+    express_lane: bool = False
+    enhanced_accuracy: bool = False
+
+class HealthResponse(BaseModel):
+    status: str
+    version: str
+    models_loaded: bool
+    cache_stats: Dict[str, Any]
+
 # ================================
 # API ENDPOINTS
 # ================================
 
-@app.get("/")
+@app.get("/", response_model=Dict[str, str])
 async def root():
-    """Basic health check endpoint"""
+    """Root endpoint"""
     return {
-        "status": "online",
-        "service": "Enhanced HackRx RAG System with Google Gemini",
-        "version": "2.1.0",
-        "enhancements": [
-            "Token Budget Management",
-            "Adaptive Chunk Limits",
-            "Balanced Chunking (900/100)",
-            "Context-Aware Reranking",
-            "Enhanced Query Analysis"
-        ],
-        "timestamp": datetime.now().isoformat()
+        "service": "Enhanced HackRx RAG System",
+        "version": "2.0.0",
+        "status": "operational",
+        "features": "Smart API keys, dynamic model selection, enhanced accuracy"
     }
 
-@app.get("/cache-stats")
-async def get_cache_stats():
-    """Cache statistics endpoint"""
-    return CACHE_MANAGER.get_cache_stats()
+@app.get("/health", response_model=HealthResponse)
+async def health_check():
+    """Enhanced health check endpoint"""
+    try:
+        cache_stats = CACHE_MANAGER.get_cache_stats()
+        
+        return HealthResponse(
+            status="healthy",
+            version="2.0.0",
+            models_loaded=_models_loaded,
+            cache_stats=cache_stats
+        )
+    except Exception as e:
+        logger.error(f"❌ Health check failed: {e}")
+        raise HTTPException(status_code=500, detail="Health check failed")
 
 @app.post("/hackrx/run")
-async def hackrx_run_endpoint_enhanced(request: Request):
-    """Enhanced HackRx endpoint with accuracy improvements"""
+async def hackrx_run_endpoint(request: Request):
+    """Main HackRx endpoint with enhanced processing"""
     start_time = time.time()
     
-    if not simple_auth_check(request):
-        raise HTTPException(status_code=401, detail="Invalid authentication token")
-    
     try:
+        # Authentication check
+        if not simple_auth_check(request):
+            raise HTTPException(status_code=401, detail="Invalid authentication")
+        
         data = await request.json()
-        documents_url = data.get("documents")
-        questions = data.get("questions", [])
+        question = data.get("question", "").strip()
+        sources = data.get("sources", [])
         
-        if not questions:
-            raise HTTPException(status_code=400, detail="No questions provided")
+        if not question:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Question is required"}
+            )
         
-        if not documents_url:
-            raise HTTPException(status_code=400, detail="No documents URL provided")
+        if not sources:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "At least one document source is required"}
+            )
         
-        # Check document cache first
-        doc_cache_key = hashlib.md5(documents_url.encode()).hexdigest()
-        current_time = time.time()
-        cached_rag_system = None
-        
-        if doc_cache_key in _document_cache:
-            cached_data, timestamp = _document_cache[doc_cache_key]
-            if current_time - timestamp < _cache_ttl:
-                logger.info("🚀 Using cached document processing")
-                cached_rag_system = cached_data
-        
-        if cached_rag_system:
-            rag_system = cached_rag_system
-        else:
-            # Use enhanced RAG system
-            rag_system = FastRAGSystem()
-            # Enhanced document processing
-            logger.info(f"⚡ Enhanced processing document: {sanitize_pii(documents_url)}")
-            await rag_system.process_documents_fast([documents_url])
-            
-            # Cache the system
-            _document_cache[doc_cache_key] = (rag_system, current_time)
-            
-            # Cleanup old cache entries
-            if len(_document_cache) > 10:
-                oldest_key = min(_document_cache.keys(),
-                               key=lambda k: _document_cache[k][1])
-                del _document_cache[oldest_key]
-        
-        logger.info(f"❓ Processing {len(questions)} questions with enhanced routing...")
-        
-        # ENHANCED: Process questions with enhanced query analysis
-        async def process_enhanced_question(question: str) -> str:
-            try:
-                # Enhanced query analysis for routing
-                query_analysis = rag_system.complexity_analyzer.analyze_query_complexity(question)
-                complexity = query_analysis['complexity']
-                
-                if QUERY_ROUTER.is_simple_query(question) or complexity < 0.3:
-                    result = await rag_system.query_express_lane(question)
-                    return result["answer"]
+        # Validate sources
+        for source in sources:
+            if isinstance(source, str):
+                if source.startswith(('http://', 'https://')):
+                    if not validate_url_scheme(source):
+                        return JSONResponse(
+                            status_code=400,
+                            content={"error": f"Unsupported URL scheme: {sanitize_pii(source)}"}
+                        )
                 else:
-                    result = await rag_system.query(question)
-                    return result["answer"]
-            except Exception as e:
-                logger.error(f"❌ Enhanced question error: {e}")
-                return f"Error processing question: {str(e)}"
+                    if not validate_file_extension(source):
+                        return JSONResponse(
+                            status_code=400,
+                            content={"error": f"Unsupported file type: {sanitize_pii(source)}"}
+                        )
         
-        # Process questions with enhanced concurrency
-        semaphore = asyncio.Semaphore(15) # Increased from 10
+        logger.info(f"🚀 HackRx enhanced processing: {len(sources)} sources, query length: {len(question)}")
         
-        async def bounded_process(question: str) -> str:
-            async with semaphore:
-                return await process_enhanced_question(question)
+        # Process documents with enhanced system
+        doc_result = await rag_system.process_documents_fast(sources)
         
-        answers = await asyncio.gather(
-            *[bounded_process(q) for q in questions],
-            return_exceptions=False
-        )
+        # Query with enhanced processing
+        query_result = await rag_system.query(question)
+        
+        # Memory cleanup
+        MEMORY_MANAGER.cleanup_if_needed()
         
         processing_time = time.time() - start_time
-        logger.info(f"⚡ ENHANCED processing time: {processing_time:.2f}s")
+        PERFORMANCE_MONITOR.record_timing("hackrx_run", processing_time)
         
-        return {"answers": answers}
+        # Enhanced response with additional metadata
+        response_data = {
+            "answer": query_result['answer'],
+            "confidence": query_result['confidence'],
+            "domain": query_result['domain'],
+            "processing_time": processing_time,
+            "enhanced_features": {
+                "smart_api_keys": True,
+                "dynamic_model_selection": True,
+                "adaptive_chunking": True,
+                "token_aware_context": True,
+                "enhanced_accuracy": True
+            },
+            "document_stats": {
+                "total_chunks": doc_result['total_chunks'],
+                "quick_chunks": doc_result['quick_chunks'],
+                "domain_confidence": doc_result['domain_confidence']
+            },
+            "query_stats": {
+                "cached": query_result.get('cached', False),
+                "express_lane": query_result.get('express_lane', False),
+                "complexity": query_result.get('complexity', 0.5),
+                "query_type": query_result.get('query_type', 'unknown')
+            }
+        }
         
+        return JSONResponse(
+            status_code=200,
+            content=sanitize_for_json(response_data)
+        )
+    
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"❌ Enhanced endpoint error: {e}")
-        raise HTTPException(status_code=500, detail=f"Enhanced processing failed: {str(e)}")
+        logger.error(f"❌ HackRx endpoint error: {e}")
+        processing_time = time.time() - start_time
+        
+        return JSONResponse(
+            status_code=500,
+            content={
+                "error": f"Processing failed: {sanitize_pii(str(e))}",
+                "processing_time": processing_time
+            }
+        )
 
 # ================================
 # ERROR HANDLERS
 # ================================
 
-@app.exception_handler(HTTPException)
-async def http_exception_handler(request: Request, exc: HTTPException):
-    """HTTP exception handler - STANDARDIZED FORMAT"""
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "answers": [f"Error: {exc.detail}"] if exc.status_code != 401 else ["Authentication failed"],
-            "error": True,
-            "detail": sanitize_pii(exc.detail) if isinstance(exc.detail, str) else exc.detail,
-            "status_code": exc.status_code,
-            "timestamp": datetime.now().isoformat()
-        }
-    )
-
 @app.exception_handler(Exception)
-async def general_exception_handler(request: Request, exc: Exception):
-    """General exception handler - STANDARDIZED FORMAT"""
-    logger.error(f"❌ Unhandled exception: {exc}")
+async def global_exception_handler(request: Request, exc: Exception):
+    """Global exception handler with enhanced logging"""
+    logger.error(f"❌ Unhandled exception on {request.url.path}: {exc}")
+    
     return JSONResponse(
         status_code=500,
         content={
-            "answers": ["Internal server error occurred"],
-            "error": True,
-            "detail": "Internal server error occurred",
-            "status_code": 500,
-            "timestamp": datetime.now().isoformat()
+            "error": "Internal server error",
+            "detail": sanitize_pii(str(exc)),
+            "path": str(request.url.path)
+        }
+    )
+
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    """HTTP exception handler with enhanced logging"""
+    logger.warning(f"⚠️ HTTP {exc.status_code} on {request.url.path}: {exc.detail}")
+    
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": exc.detail,
+            "path": str(request.url.path)
         }
     )
 
 # ================================
-# MAIN ENTRY POINT
+# APPLICATION STARTUP
 # ================================
 
 if __name__ == "__main__":
     import uvicorn
     
+    # Get port from environment variable (Cloud Run requirement)
     port = int(os.getenv("PORT", 8000))
-    logger.info(f"🚀 Starting Enhanced HackRx RAG System with Google Gemini on port {port}")
+    
+    logger.info(f"🚀 Starting HackRx RAG System with Constitution Accuracy Optimizations on port {port}")
     
     uvicorn.run(
         "main:app",
