@@ -1997,30 +1997,54 @@ async def health_check():
 
 @app.post("/hackrx/run")
 async def hackrx_run_endpoint(request: Request):
-    """Main HackRx endpoint with enhanced processing"""
+    """Main HackRx endpoint with batch processing support"""
     start_time = time.time()
-    
     try:
         # Authentication check
         if not simple_auth_check(request):
             raise HTTPException(status_code=401, detail="Invalid authentication")
-        
+
         data = await request.json()
-        question = data.get("question", "").strip()
-        sources = data.get("sources", [])
         
-        if not question:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "Question is required"}
-            )
+        # Handle both old format (backward compatibility) and new batch format
+        if "documents" in data and "questions" in data:
+            # New batch format from judges
+            document_url = data.get("documents", "").strip()
+            questions = data.get("questions", [])
+            
+            if not document_url:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Document URL is required"}
+                )
+            
+            if not questions or not isinstance(questions, list):
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Questions array is required"}
+                )
+            
+            sources = [document_url]  # Convert single URL to sources array
+            
+        else:
+            # Original format (backward compatibility)
+            question = data.get("question", "").strip()
+            sources = data.get("sources", [])
+            
+            if not question:
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Question is required"}
+                )
+            
+            questions = [question]  # Convert single question to array
         
         if not sources:
             return JSONResponse(
                 status_code=400,
                 content={"error": "At least one document source is required"}
             )
-        
+
         # Validate sources
         for source in sources:
             if isinstance(source, str):
@@ -2036,58 +2060,97 @@ async def hackrx_run_endpoint(request: Request):
                             status_code=400,
                             content={"error": f"Unsupported file type: {sanitize_pii(source)}"}
                         )
-        
-        logger.info(f"🚀 HackRx enhanced processing: {len(sources)} sources, query length: {len(question)}")
-        
-        # Process documents with enhanced system
+
+        logger.info(f"🚀 HackRx processing: {len(sources)} sources, {len(questions)} questions")
+
+        # Process documents once (enhanced system)
         doc_result = await rag_system.process_documents_fast(sources)
         
-        # Query with enhanced processing
-        query_result = await rag_system.query(question)
-        
+        # Process all questions
+        query_results = []
+        for i, question in enumerate(questions):
+            logger.info(f"🔍 Processing question {i+1}/{len(questions)}: {question[:50]}...")
+            query_result = await rag_system.query(question)
+            query_results.append(query_result)
+
         # Memory cleanup
         MEMORY_MANAGER.cleanup_if_needed()
-        
+
         processing_time = time.time() - start_time
         PERFORMANCE_MONITOR.record_timing("hackrx_run", processing_time)
-        
-        # Enhanced response with additional metadata
-        response_data = {
-            "answer": query_result['answer'],
-            "confidence": query_result['confidence'],
-            "domain": query_result['domain'],
-            "processing_time": processing_time,
-            "enhanced_features": {
-                "smart_api_keys": True,
-                "dynamic_model_selection": True,
-                "adaptive_chunking": True,
-                "token_aware_context": True,
-                "enhanced_accuracy": True
-            },
-            "document_stats": {
-                "total_chunks": doc_result['total_chunks'],
-                "quick_chunks": doc_result['quick_chunks'],
-                "domain_confidence": doc_result['domain_confidence']
-            },
-            "query_stats": {
-                "cached": query_result.get('cached', False),
-                "express_lane": query_result.get('express_lane', False),
-                "complexity": query_result.get('complexity', 0.5),
-                "query_type": query_result.get('query_type', 'unknown')
+
+        # Handle response format based on input format
+        if len(questions) == 1:
+            # Single question - return original format for backward compatibility
+            query_result = query_results[0]
+            response_data = {
+                "answer": query_result['answer'],
+                "confidence": query_result['confidence'],
+                "domain": query_result['domain'],
+                "processing_time": processing_time,
+                "enhanced_features": {
+                    "smart_api_keys": True,
+                    "dynamic_model_selection": True,
+                    "adaptive_chunking": True,
+                    "token_aware_context": True,
+                    "enhanced_accuracy": True
+                },
+                "document_stats": {
+                    "total_chunks": doc_result['total_chunks'],
+                    "quick_chunks": doc_result['quick_chunks'],
+                    "domain_confidence": doc_result['domain_confidence']
+                },
+                "query_stats": {
+                    "cached": query_result.get('cached', False),
+                    "express_lane": query_result.get('express_lane', False),
+                    "complexity": query_result.get('complexity', 0.5),
+                    "query_type": query_result.get('query_type', 'unknown')
+                }
             }
-        }
-        
+        else:
+            # Multiple questions - return batch format
+            response_data = {
+                "results": [
+                    {
+                        "question": questions[i],
+                        "answer": result['answer'],
+                        "confidence": result['confidence'],
+                        "domain": result['domain'],
+                        "processing_time": result['processing_time'],
+                        "cached": result.get('cached', False),
+                        "express_lane": result.get('express_lane', False),
+                        "complexity": result.get('complexity', 0.5),
+                        "query_type": result.get('query_type', 'unknown')
+                    }
+                    for i, result in enumerate(query_results)
+                ],
+                "total_processing_time": processing_time,
+                "document_stats": {
+                    "total_chunks": doc_result['total_chunks'],
+                    "quick_chunks": doc_result['quick_chunks'],
+                    "domain_confidence": doc_result['domain_confidence'],
+                    "domain": doc_result['domain']
+                },
+                "enhanced_features": {
+                    "smart_api_keys": True,
+                    "dynamic_model_selection": True,
+                    "adaptive_chunking": True,
+                    "token_aware_context": True,
+                    "enhanced_accuracy": True,
+                    "batch_processing": True
+                }
+            }
+
         return JSONResponse(
             status_code=200,
             content=sanitize_for_json(response_data)
         )
-    
+
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"❌ HackRx endpoint error: {e}")
         processing_time = time.time() - start_time
-        
         return JSONResponse(
             status_code=500,
             content={
@@ -2095,6 +2158,7 @@ async def hackrx_run_endpoint(request: Request):
                 "processing_time": processing_time
             }
         )
+
 
 # ================================
 # ERROR HANDLERS
