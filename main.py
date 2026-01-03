@@ -90,8 +90,8 @@ logger = logging.getLogger(__name__)
 # ================================
 
 # Fixed optimal configuration
-HACKRX_TOKEN = "9a1163c13e8927960b857a674794a62c57baf588998981151b0753a4d6d17905"
-GEMINI_API_KEY = 'AIzaSyCW73sAHC1f4ZAMNoRABMjyGBwci1CMCWc'
+HACKRX_TOKEN = ""
+GEMINI_API_KEY = ''
 
 # ENHANCED CONFIGURATION WITH ACCURACY IMPROVEMENTS
 EMBEDDING_MODEL_NAME = "all-MiniLM-L6-v2"
